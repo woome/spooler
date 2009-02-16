@@ -99,13 +99,15 @@ def remove_proc_dir(spooler):
     os.rmdir(spooler._processing)
 
 
-def getspooler(opts):
-    spooler = named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
-    atexit.register(remove_proc_dir, spooler)
-    return spooler
+class Spooler(object):
+    def __new__(cls, opts):
+        if not hasattr(cls, 'spooler'):
+            cls.spooler = named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+            atexit.register(remove_proc_dir, cls.spooler)
+        return cls.spooler
 
 def getpids(opts):
-    spooler = getspooler(opts)
+    spooler = Spooler(opts)
     piddir = os.path.join(spooler._base, 'run')
     for fn in os.listdir(piddir):
         pidfile = os.path.join(piddir, fn)
@@ -125,17 +127,24 @@ def stop(opts):
 
 
 def status(opts):
-    spooler = getspooler(opts)
+    spooler = Spooler(opts)
+    pids = dict((os.path.splitext(os.path.basename(pidfile))[0], pid) for pidfile, pid in getpids(opts))
     prgen = os.walk(spooler._processing_base)
     root, spools, _ignore = prgen.next()
-    print >> sys.stdout, "spool\t\tjobs\tmax age (s)"
+    print >> sys.stdout, "spool\t\tjobs\tmax age (s)\tstatus"
     for spool in spools:
+        if spool == os.path.basename(spooler._processing):
+            continue # the spool we're seeing is the one created for us above
         jobs = os.listdir(os.path.join(root, spool))
         jobfn = lambda job: os.path.join(root, spool, job)
         jctime = lambda job: os.stat(jobfn(job))[ST_CTIME]
         calcage = lambda ts: time.time() - ts
         maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
-        print >> sys.stdout, "%s\t%s\t%s" % (spool, len(jobs), maxage(jobs))
+        if spool in pids:
+            status = 'pid present'
+        else:
+            status = 'crashed - no pidfile'
+        print >> sys.stdout, "%s\t%s\t%s\t\t%s" % (spool, len(jobs), maxage(jobs), status)
 
 def start_daemonized(opts):
     kwargs = {
@@ -144,16 +153,16 @@ def start_daemonized(opts):
     }
     become_daemon(**kwargs)
     # make dir for pids
-    spooler = getspooler(opts)
+    spooler = Spooler(opts)
     piddir = os.path.join(spooler._base, 'run')
     if not os.path.isdir(piddir):
         os.mkdir(piddir)
-    with open(os.path.join(piddir, '%s.pid' % os.getpid()), 'w') as pf:
+    with open(os.path.join(piddir, '%s.pid' % os.path.basename(spooler._processing)), 'w') as pf:
         pf.write('%s' % os.getpid())
     run(spooler, sleep_secs=opts.get('-s', 1))
 
 def start(opts):
-    spooler = getspooler(opts)
+    spooler = Spooler(opts)
     run(spooler, sleep_secs=opts.get('-s', 1))
 
 
