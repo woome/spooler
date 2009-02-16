@@ -20,8 +20,6 @@ class SigAsyncSpool(Spool):
             # Get the func
             func_name = data["func_name"]
             func_module = data["func_module"]
-            import pdb
-            pdb.set_trace()
             function_object = {}
             exec "import %s ; func_obj=%s.%s" % (func_module, func_module, func_name) in function_object
             del data["func_name"]
