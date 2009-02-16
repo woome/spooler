@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 from __future__ import with_statement
+import atexit
 import getopt
 import os
 import signal
@@ -24,7 +25,7 @@ def become_daemon(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
     # First fork
     try:
         if os.fork() > 0:
-            sys.exit(0)     # kill off parent
+            os._exit(0)     # kill off parent
     except OSError, e:
         sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
         sys.exit(1)
@@ -89,9 +90,14 @@ def run(spool, sleep_secs=1):
         spool.process()
         time.sleep(sleep_secs)
 
+def remove_proc_dir(spooler):
+    os.rmdir(spooler._processing)
+
 
 def getspooler(opts):
-    return named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+    spooler = named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+    atexit.register(remove_proc_dir, spooler)
+    return spooler
 
 def getpids(opts):
     spooler = getspooler(opts)
@@ -138,7 +144,7 @@ def start(opts):
 
 def main(args):
     try:
-        opts, args = getopt.getopt(args, 'De:o:s:m:', ['nodjango'])
+        opts, args = getopt.getopt(args, 'Dle:o:s:m:', ['nodjango'])
         opts = dict(opts)
         if '--nodjango' not in args:
             setup_environment()
@@ -157,6 +163,9 @@ def main(args):
 
 
 if __name__ == '__main__':
+    def exit(signum, frm):
+        sys.exit(1)
+    signal.signal(signal.SIGINT, exit)
     main(sys.argv[1:])
 
 #END
