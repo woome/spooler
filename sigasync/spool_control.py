@@ -18,53 +18,134 @@ def setup_environment():
     except ImportError, e:
         pass
 
+# tea-leaf'd from django.utils.daemonize
+def become_daemon(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
+    "Robustly turn into a UNIX daemon, running in our_home_dir."
+    # First fork
+    try:
+        if os.fork() > 0:
+            sys.exit(0)     # kill off parent
+    except OSError, e:
+        sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
+        sys.exit(1)
+    os.setsid()
+    os.chdir(our_home_dir)
+    os.umask(0)
+
+    # Second fork
+    try:
+        if os.fork() > 0:
+            os._exit(0)
+    except OSError, e:
+        sys.stderr.write("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror))
+        os._exit(1)
+
+    si = open('/dev/null', 'r')
+    so = open(out_log, 'a+', 0)
+    se = open(err_log, 'a+', 0)
+    os.dup2(si.fileno(), sys.stdin.fileno())
+    os.dup2(so.fileno(), sys.stdout.fileno())
+    os.dup2(se.fileno(), sys.stderr.fileno())
+    # Set custom file descriptors so that they get proper buffering.
+    sys.stdout, sys.stderr = so, se
+
+
+# this one lifted from eventlet.api with no hint of remorse
+def named(name):
+    """Return an object given its name.
+
+    The name uses a module-like syntax, eg::
+
+      os.path.join
+
+    or::
+
+      mulib.mu.Resource
+    """
+    toimport = name
+    obj = None
+    while toimport:
+        try:
+            obj = __import__(toimport)
+            break
+        except ImportError, err:
+            # print 'Import error on %s: %s' % (toimport, err)  # debugging spam
+            toimport = '.'.join(toimport.split('.')[:-1])
+    if obj is None:
+        raise ImportError('%s could not be imported' % (name, ))
+    for seg in name.split('.')[1:]:
+        try:
+            obj = getattr(obj, seg)
+        except AttributeError:
+            dirobj = dir(obj)
+            dirobj.sort()
+            raise AttributeError('attribute %r missing from %r (%r) %r' % (
+                seg, obj, dirobj, name))
+    return obj
+
 
 def run(spool, sleep_secs=1):
     while True:
         spool.process()
         time.sleep(sleep_secs)
 
-def stop():
-    from sigasync.sigasync_spooler import SPOOLER
-    piddir = os.path.join(SPOOLER._base, 'run')
+
+def getspooler(opts):
+    return named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+
+def getpids(opts):
+    spooler = getspooler(opts)
+    piddir = os.path.join(spooler._base, 'run')
     for fn in os.listdir(piddir):
         pidfile = os.path.join(piddir, fn)
+        with open(pidfile) as pf:
+            pid = pf.read()
+            yield pidfile, int(pid)
+
+
+def stop(opts):
+    for pidfile, pid in getpids(opts):
         try:
-            with open(pidfile) as pf:
-                pid = pf.read()
-                print >> sys.stdout, "killing process %s" % pid
-                os.kill(int(pid), signal.SIGINT)
+            os.kill(pid, signal.SIGINT)
+            print >> sys.stdout, "killing process %s" % pid
         except OSError, e:
             print >> sts.stderr, "couldn't kill process %s" % pid
         os.remove(pidfile)
 
+
+def status(opts):
+    spooler = getspooler(opts)
+    prroot = os.walk(spooler._processing_base)
+
 def start_daemonized(opts):
-    from django.utils.daemonize import become_daemon
     kwargs = {
         'err_log': opts.get('-e', '/dev/null'),
         'out_log': opts.get('-o', '/dev/null'),
     }
     become_daemon(**kwargs)
     # make dir for pids
-    from sigasync.sigasync_spooler import SPOOLER
-    piddir = os.path.join(SPOOLER._base, 'run')
+    spooler = getspooler(opts)
+    piddir = os.path.join(spooler._base, 'run')
     if not os.path.isdir(piddir):
         os.mkdir(piddir)
     with open(os.path.join(piddir, '%s.pid' % os.getpid()), 'w') as pf:
         pf.write('%s' % os.getpid())
-    run(SPOOLER, sleep_secs=opts.get('-s', 1))
+    run(spooler, sleep_secs=opts.get('-s', 1))
 
 def start(opts):
-    from sigasync.sigasync_spooler import SPOOLER
-    run(SPOOLER, sleeps_secs=opts.get('-s', 1))
+    spooler = getspooler(opts)
+    run(spooler, sleep_secs=opts.get('-s', 1))
 
 def main(args):
     try:
-        setup_environment()
-        opts, args = getopt.getopt(args, 'Deos', [])
+        opts, args = getopt.getopt(args, 'Deosm:', ['nodjango'])
         opts = dict(opts)
+        if '--nodjango' not in args:
+            setup_environment()
         if 'stop' in args[0:1]:
-            stop()
+            stop(opts)
+        elif 'status' in args[0:1]:
+            status(opts)
         elif 'start' in args[0:1]:
             if '-D' not in opts:
                 start_daemonized(opts)
