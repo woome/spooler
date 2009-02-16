@@ -1,8 +1,6 @@
 
 """Send signals over an asynchronous delivery mechanism"""
 
-import pdb
-
 def sigasync_handler(func):
     print "sigaync_handler called"
 
@@ -10,7 +8,6 @@ def sigasync_handler(func):
         # We only allow simple types
         # This is from our original PGQ based transport.
 
-        pdb.set_trace()
         try:
             for k, v in kwargs.iteritems():
                 assert type(v) in (str, bool, int)
