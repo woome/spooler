@@ -13,6 +13,7 @@ GRACEFULINT = False
 DO_PROCESS = True
 
 def setup_environment():
+    """setup our django 'app' environment"""
     import config.importname
     local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
     sys.path.insert(0, getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg')))
@@ -97,9 +98,11 @@ def run(spool, sleep_secs=1):
     sys.exit(0)
 
 def remove_proc_dir(spooler):
+    """remove processing dir for spooler"""
     os.rmdir(spooler._processing)
 
 
+# get spooler for options dict
 class Spooler(object):
     def __new__(cls, opts):
         if not hasattr(cls, 'spooler'):
@@ -108,6 +111,7 @@ class Spooler(object):
         return cls.spooler
 
 def getpids(opts):
+    """get all pids available for spooler given in opts"""
     spooler = Spooler(opts)
     piddir = os.path.join(spooler._base, 'run')
     for fn in os.listdir(piddir):
@@ -118,6 +122,7 @@ def getpids(opts):
 
 
 def stop(opts):
+    """kill all spooler procs we have pids for"""
     for pidfile, pid in getpids(opts):
         try:
             os.kill(pid, signal.SIGINT)
@@ -128,6 +133,7 @@ def stop(opts):
 
 
 def status(opts):
+    """get status of spooler by looking in processing directory"""
     spooler = Spooler(opts)
     pids = dict((os.path.splitext(os.path.basename(pidfile))[0], pid) for pidfile, pid in getpids(opts))
     prgen = os.walk(spooler._processing_base)
