@@ -4,6 +4,7 @@ import atexit
 import getopt
 import os
 import signal
+from stat import ST_CTIME
 import sys
 import time
 
@@ -125,7 +126,16 @@ def stop(opts):
 
 def status(opts):
     spooler = getspooler(opts)
-    prroot = os.walk(spooler._processing_base)
+    prgen = os.walk(spooler._processing_base)
+    root, spools, _ignore = prgen.next()
+    print >> sys.stdout, "spool\t\tjobs\tmax age (s)"
+    for spool in spools:
+        jobs = os.listdir(os.path.join(root, spool))
+        jobfn = lambda job: os.path.join(root, spool, job)
+        jctime = lambda job: os.stat(jobfn(job))[ST_CTIME]
+        calcage = lambda ts: time.time() - ts
+        maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
+        print >> sys.stdout, "%s\t%s\t%s" % (spool, len(jobs), maxage(jobs))
 
 def start_daemonized(opts):
     kwargs = {
