@@ -138,7 +138,7 @@ def start(opts):
 
 def main(args):
     try:
-        opts, args = getopt.getopt(args, 'Deosm:', ['nodjango'])
+        opts, args = getopt.getopt(args, 'De:o:s:m:', ['nodjango'])
         opts = dict(opts)
         if '--nodjango' not in args:
             setup_environment()
