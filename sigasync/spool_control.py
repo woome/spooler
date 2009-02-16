@@ -146,6 +146,10 @@ def start(opts):
     spooler = getspooler(opts)
     run(spooler, sleep_secs=opts.get('-s', 1))
 
+
+class NoCommandError(Exception):
+    pass
+
 def main(args):
     try:
         opts, args = getopt.getopt(args, 'Dle:o:s:m:', ['nodjango'])
@@ -161,9 +165,22 @@ def main(args):
                 start_daemonized(opts)
             else:
                 start(opts)
+        else:
+            raise NoCommandError()
 
     except getopt.GetoptError, e:
         raise
+    except NoCommandError, e:
+        print >> sys.stdout, """usage: %s [options] start|stop|status
+        options:
+        -D:         do not daemonize
+        -e:         error log file
+        -o:         stdout log file
+        -s <num>:   number of seconds for each sleep loop. default 1
+        -m:         python path of spool instance. default sigasync.sigasync_spooler.SPOOLER
+        --nodjango: do no load django environment
+
+        """ % sys.argv[0]
 
 
 if __name__ == '__main__':
