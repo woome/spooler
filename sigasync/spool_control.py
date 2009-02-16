@@ -7,6 +7,9 @@ import signal
 import sys
 import time
 
+GRACEFULINT = False
+DO_PROCESS = True
+
 def setup_environment():
     import config.importname
     local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
@@ -86,9 +89,10 @@ def named(name):
 
 
 def run(spool, sleep_secs=1):
-    while True:
+    while DO_PROCESS:
         spool.process()
         time.sleep(sleep_secs)
+    sys.exit(0)
 
 def remove_proc_dir(spooler):
     os.rmdir(spooler._processing)
@@ -164,7 +168,10 @@ def main(args):
 
 if __name__ == '__main__':
     def exit(signum, frm):
-        sys.exit(1)
+        if GRACEFULINT:
+            DO_PROCESS = False
+        else:
+            sys.exit(1)
     signal.signal(signal.SIGINT, exit)
     main(sys.argv[1:])
 
