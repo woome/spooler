@@ -105,7 +105,10 @@ class Spool(object):
         if not os.path.exists(self._out):
             os.makedirs(self._out)
 
-        self._processing = tempfile.mkdtemp(dir=os.path.join(self._base, 'processing'))
+        prdir = os.path.join(self._base, 'processing')
+        if not os.path.isdir(prdir):
+            os.makedirs(prdir)
+        self._processing = tempfile.mkdtemp(dir=prdir)
 
 
     # You must implement this.
