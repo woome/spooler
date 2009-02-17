@@ -114,6 +114,8 @@ def getpids(opts):
     """get all pids available for spooler given in opts"""
     spooler = Spooler(opts)
     piddir = os.path.join(spooler._base, 'run')
+    if not os.path.isdir(piddir):
+        return
     for fn in os.listdir(piddir):
         pidfile = os.path.join(piddir, fn)
         with open(pidfile) as pf:
