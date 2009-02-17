@@ -107,6 +107,7 @@ class Spooler(object):
     def __new__(cls, opts):
         if not hasattr(cls, 'spooler'):
             cls.spooler = named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+            # register function to remove processing dir when we exit
             atexit.register(remove_proc_dir, cls.spooler)
         return cls.spooler
 
@@ -221,6 +222,7 @@ def main(args):
 
 
 if __name__ == '__main__':
+    # catch sigint and exit so that our atexit handler gets called to clean processing dir
     def exit(signum, frm):
         if GRACEFULINT:
             DO_PROCESS = False
