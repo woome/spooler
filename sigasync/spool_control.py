@@ -131,6 +131,9 @@ def stop(opts):
             print >> sts.stderr, "couldn't kill process %s" % pid
         os.remove(pidfile)
 
+def _isprocessrunning(pid):
+    ps = Popen(['ps', '-p', '%s' % pid], stdout=PIPE)
+    return bool(Popen(['grep', '%s' % pid], stdin=ps.stdout, stdout=PIPE).communicate()[0])
 
 def status(opts):
     """get status of spooler by looking in processing directory"""
@@ -148,8 +151,7 @@ def status(opts):
         calcage = lambda ts: time.time() - ts
         maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
         if spool in pids:
-            ps = Popen(['ps', '-p', '%s' % pids[spool]], stdout=PIPE)
-            status = 'running' if Popen(['grep', '%s' % pids[spool]], stdin=ps.stdout, stdout=PIPE).communicate()[0] else 'crashed - no process'
+            status = 'running' if _isprocessrunning(pids[spool]) else 'crashed - no process'
             del pids[spool]
         else:
             status = 'crashed - no pidfile'
@@ -157,8 +159,8 @@ def status(opts):
 
     if pids:
         print >> sys.stdout, "\norphaned pid files:"
-        for pid in pids.iteritems():
-            print >> sys.stdout, "%s\t%s" % pid
+        for pidfile, pid in pids.iteritems():
+            print >> sys.stdout, "%s.pid\t%s" % (pidfile, pid)
 
 def start_daemonized(opts):
     kwargs = {
