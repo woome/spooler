@@ -108,7 +108,18 @@ class Spool(object):
         self._processing_base = os.path.join(self._base, 'processing')
         if not os.path.isdir(self._processing_base):
             os.makedirs(self._processing_base)
-        self._processing = tempfile.mkdtemp(dir=self._processing_base)
+
+    class _LazyProcessingDescriptor(object):
+        """this is here as a little hack to prevent the spooler instance from creating
+        a processing directory automatically at instantiation.
+
+        need a special class because i want a non-data descriptor, unlike property()
+
+        """
+        def __get__(self, obj, type=None):
+            obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
+            return obj._processing
+    _processing = _LazyProcessingDescriptor()
 
 
     # You must implement this.
