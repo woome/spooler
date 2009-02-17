@@ -150,9 +150,15 @@ def status(opts):
         if spool in pids:
             ps = Popen(['ps', '-p', '%s' % pids[spool]], stdout=PIPE)
             status = 'running' if Popen(['grep', '%s' % pids[spool]], stdin=ps.stdout, stdout=PIPE).communicate()[0] else 'crashed - no process'
+            del pids[spool]
         else:
             status = 'crashed - no pidfile'
         print >> sys.stdout, "%s\t%s\t%s\t\t%s" % (spool, len(jobs), maxage(jobs), status)
+
+    if pids:
+        print >> sys.stdout, "\norphaned pid files:"
+        for pid in pids.iteritems():
+            print >> sys.stdout, "%s\t%s" % pid
 
 def start_daemonized(opts):
     kwargs = {
