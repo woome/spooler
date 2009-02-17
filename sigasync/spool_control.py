@@ -128,7 +128,7 @@ def stop(opts):
             os.kill(pid, signal.SIGINT)
             print >> sys.stdout, "killing process %s" % pid
         except OSError, e:
-            print >> sts.stderr, "couldn't kill process %s" % pid
+            print >> sys.stderr, "couldn't kill process %s" % pid
         os.remove(pidfile)
 
 def _isprocessrunning(pid):
