@@ -138,6 +138,18 @@ def _isprocessrunning(pid):
     ps = Popen(['ps', '-p', '%s' % pid], stdout=PIPE)
     return bool(Popen(['grep', '%s' % pid], stdin=ps.stdout, stdout=PIPE).communicate()[0])
 
+def get_spool_info(spooldir):
+    jobs = os.listdir(spooldir)
+    jobfn = lambda job: os.path.join(spooldir, job)
+    def jctime(job):
+        try:
+            return os.path.getctime(jobfn(job))
+        except OSError, e:
+            return time.time()
+    calcage = lambda ts: time.time() - ts
+    maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
+    return len(jobs), maxage(jobs)
+
 def status(opts):
     """get status of spooler by looking in processing directory"""
     spooler = Spooler(opts)
@@ -148,17 +160,13 @@ def status(opts):
     for spool in spools:
         if spool == os.path.basename(spooler._processing):
             continue # the spool we're seeing is the one created for us above
-        jobs = os.listdir(os.path.join(root, spool))
-        jobfn = lambda job: os.path.join(root, spool, job)
-        jctime = lambda job: os.stat(jobfn(job))[ST_CTIME]
-        calcage = lambda ts: time.time() - ts
-        maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
         if spool in pids:
             status = 'running' if _isprocessrunning(pids[spool]) else 'crashed - no process'
             del pids[spool]
         else:
             status = 'crashed - no pidfile'
-        print >> sys.stdout, "%s\t%s\t%s\t\t%s" % (spool, len(jobs), maxage(jobs), status)
+        numjobs, maxage = get_spool_info(os.path.join(root, spool))
+        print >> sys.stdout, "%s\t%s\t%s\t\t%s" % (spool, numjobs, maxage, status)
 
     if pids:
         print >> sys.stdout, "\norphaned pid files:"
