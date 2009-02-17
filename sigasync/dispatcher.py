@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.dispatch import dispatcher
 from sigasync.sigasync_handler import sigasync_handler as handler
 
