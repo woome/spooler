@@ -157,6 +157,8 @@ def status(opts):
     prgen = os.walk(spooler._processing_base)
     root, spools, _ignore = prgen.next()
     print >> sys.stdout, "spool\t\tjobs\tmax age (s)\tstatus"
+    if '--in' in opts:
+        print >> sys.stdout, "in\t\t%s\t%s\t\t---" % get_spool_info(os.path.join(root, '..', 'in'))
     for spool in spools:
         if spool == os.path.basename(spooler._processing):
             continue # the spool we're seeing is the one created for us above
@@ -198,7 +200,7 @@ class NoCommandError(Exception):
 
 def main(args):
     try:
-        opts, args = getopt.getopt(args, 'Dle:o:s:m:', ['nodjango'])
+        opts, args = getopt.getopt(args, 'Dle:o:s:m:', ['nodjango', 'in'])
         opts = dict(opts)
         if '--nodjango' not in args:
             setup_environment()
@@ -225,6 +227,7 @@ def main(args):
         -s <num>:   number of seconds for each sleep loop. default 1
         -m:         python path of spool instance. default sigasync.sigasync_spooler.SPOOLER
         --nodjango: do no load django environment
+        --in:       list incoming jobs in status
 
         """ % sys.argv[0]
 
