@@ -158,7 +158,7 @@ def status(opts):
     root, spools, _ignore = prgen.next()
     print >> sys.stdout, "spool\t\tjobs\tmax age (s)\tstatus"
     if '--in' in opts:
-        print >> sys.stdout, "in\t\t%s\t%s\t\t---" % get_spool_info(os.path.join(root, '..', 'in'))
+        print >> sys.stdout, "in\t\t%s\t%s\t\t---" % get_spool_info(spooler._in)
     for spool in spools:
         if spool == os.path.basename(spooler._processing):
             continue # the spool we're seeing is the one created for us above
@@ -169,6 +169,8 @@ def status(opts):
             status = 'crashed - no pidfile'
         numjobs, maxage = get_spool_info(os.path.join(root, spool))
         print >> sys.stdout, "%s\t%s\t%s\t\t%s" % (spool, numjobs, maxage, status)
+    if hasattr(spooler, '_failed') and os.path.exists(spooler._failed):
+        print >> sys.stdout, "failed\t\t%s\t%s\t\t---" % (get_spool_info(spooler._failed)[0], '---')
 
     if pids:
         print >> sys.stdout, "\norphaned pid files:"
