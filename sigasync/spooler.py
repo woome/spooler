@@ -11,11 +11,14 @@ import sys
 
 import pdb
 
-
 class SpoolExists(Exception):
     pass
 
 class SpoolDoesNotExist(Exception):
+    pass
+
+class FailError(Exception):
+    """fail the entry"""
     pass
 
 

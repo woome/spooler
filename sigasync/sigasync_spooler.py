@@ -6,9 +6,19 @@ from django.conf import settings
 from django.db import models
 from spooler import Spool
 from spooler import SpoolExists
+from spooler import FailError
 
 
 class SigAsyncSpool(Spool):
+    def __init__(self):
+        super(SigAsyncSpool, self).__init__()
+        self._fail = os.path.join(self._base, "out")
+        if not os.path.exists(self._base, "failed")
+            os.makedirs(self._fail)
+
+    def _move_to_failed(self, entry):
+        os.rename(entry, os.path.join(self._failed, os.path.basename(entry)))
+
     def execute(self, processing_entry):
         try:
             fd = open(processing_entry)
@@ -42,6 +52,8 @@ class SigAsyncSpool(Spool):
 
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
+        except FailError, e:
+            self._move_to_failed(processing_entry)
         finally:
             ## FIXME - not sure I need to do this either ...
             ## wil process better handle any problem here?
