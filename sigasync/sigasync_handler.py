@@ -1,18 +1,18 @@
-
 """Send signals over an asynchronous delivery mechanism"""
+try:
+    import simplejson
+except ImportError, e:
+    from django.utils import simplejson
 
 def sigasync_handler(func):
     print "sigaync_handler called"
 
-    def continuation(sender, instance, created, signal=None, *args, **kwargs):
+    def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
         # We only allow simple types
         # This is from our original PGQ based transport.
 
-        try:
-            for k, v in kwargs.iteritems():
-                assert type(v) in (str, bool, int)
-        except AssertionError:
-            raise Exception("kwargs to signal handler '%s' must be of type (str, int, bool) only" % func.__name__)
+        # raises a ValueError if the kwargs cannot be encoded to json
+        kwargs_data = simplejson.dumps(kwargs)
 
         # Make a datum
         from urllib import urlencode
@@ -24,8 +24,9 @@ def sigasync_handler(func):
             "created": { 
                 True: "1",
                 False: "0"
-                }.get(created, "0")
-            }
+                }.get(created, "0"),
+            "kwargs": kwargs_data,
+        }
 
         # Submit to the spooler
         import sigasync_spooler

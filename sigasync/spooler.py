@@ -225,6 +225,7 @@ class Spool(object):
                 try:
                     function(processing_entry)
                 except Exception, e:
+                    print >>sys.stderr, "encountered error: %s" % e
                     self._move_to_incomming(processing_entry)
                 else:
                     self._move_to_outgoing(processing_entry)

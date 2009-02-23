@@ -1,10 +1,12 @@
-
+try:
+    import simplejson
+except ImportError, e:
+    from django.utils import simplejson
 from django.conf import settings
 from django.db import models
 from spooler import Spool
 from spooler import SpoolExists
 
-import pdb
 
 class SigAsyncSpool(Spool):
     def execute(self, processing_entry):
@@ -35,6 +37,8 @@ class SigAsyncSpool(Spool):
             data["sender"] = model
             data["instance"] = instance
             data["created"] = created
+            if 'kwargs' in data:
+                data.update(simplejson.loads(data['kwargs']))
 
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
