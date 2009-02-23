@@ -1,3 +1,4 @@
+import os
 try:
     import simplejson
 except ImportError, e:
@@ -10,11 +11,11 @@ from spooler import FailError
 
 
 class SigAsyncSpool(Spool):
-    def __init__(self):
-        super(SigAsyncSpool, self).__init__()
-        self._fail = os.path.join(self._base, "out")
-        if not os.path.exists(self._base, "failed")
-            os.makedirs(self._fail)
+    def __init__(self, name, directory="/tmp", in_spool=None):
+        super(SigAsyncSpool, self).__init__(name, directory, in_spool)
+        self._failed = os.path.join(self._base, "failed")
+        if not os.path.exists(self._failed):
+            os.makedirs(self._failed)
 
     def _move_to_failed(self, entry):
         os.rename(entry, os.path.join(self._failed, os.path.basename(entry)))
