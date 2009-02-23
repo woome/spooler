@@ -148,7 +148,7 @@ def get_spool_info(spooldir):
             return time.time()
     calcage = lambda ts: time.time() - ts
     maxage = lambda jobs: reduce(max, (calcage(jctime(job)) for job in jobs), 0)
-    return len(jobs), maxage(jobs)
+    return len(jobs), int(maxage(jobs))
 
 def status(opts):
     """get status of spooler by looking in processing directory"""
