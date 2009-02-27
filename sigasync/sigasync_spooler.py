@@ -49,7 +49,11 @@ class SigAsyncSpool(Spool):
             data["instance"] = instance
             data["created"] = created
             if 'kwargs' in data:
-                data.update(simplejson.loads(data['kwargs']))
+		kw = simplejson.loads(data['kwargs']) 
+		if isinstance(kw, dict):
+			for key,val in kw.iteritems():
+				data[key.encode('ascii') if isinstance(key, unicode) else key] = val
+		del data['kwargs']
 
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
