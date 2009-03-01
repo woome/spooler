@@ -5,6 +5,7 @@ except ImportError, e:
     from django.utils import simplejson
 from django.conf import settings
 from django.db import models
+from django.db import transaction
 from spooler import Spool
 from spooler import SpoolExists
 from spooler import FailError
@@ -14,6 +15,7 @@ class SigAsyncSpool(Spool):
     def __init__(self, name, directory="/tmp", in_spool=None):
         super(SigAsyncSpool, self).__init__(name, directory, in_spool)
         self._failed = os.path.join(self._base, "failed")
+        self.close_transaction_after_execute = False
         if not os.path.exists(self._failed):
             os.makedirs(self._failed)
 
@@ -63,6 +65,8 @@ class SigAsyncSpool(Spool):
                     fd.close()
                 except Exception, e:
                     logger.error("failed to read the data in the processing_entry")
+            if self.close_transaction_after_execute:
+                transaction.commit()
 
 
 # Std init
