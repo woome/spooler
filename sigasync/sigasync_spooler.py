@@ -69,7 +69,7 @@ class SigAsyncSpool(Spool):
                     fd.close()
                 except Exception, e:
                     logger.error("failed to read the data in the processing_entry")
-            if self.close_transaction_after_execute:
+            if transaction.is_managed() and self.close_transaction_after_execute:
                 transaction.commit()
 
 
