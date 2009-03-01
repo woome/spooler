@@ -92,6 +92,7 @@ def named(name):
 
 
 def run(spool, sleep_secs=1):
+    spool.close_transaction_after_execute = True
     while DO_PROCESS:
         spool.process()
         time.sleep(sleep_secs)
