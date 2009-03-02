@@ -227,6 +227,8 @@ class Spool(object):
                 # The entry was moved to our processing dir so try and execute the job
                 try:
                     function(processing_entry)
+                except FailError, e:
+                    pass
                 except Exception, e:
                     print >>sys.stderr, "encountered error: %s" % e
                     self._move_to_incomming(processing_entry)

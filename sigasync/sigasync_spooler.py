@@ -61,6 +61,7 @@ class SigAsyncSpool(Spool):
             function_object["func_obj"](**data)
         except FailError, e:
             self._move_to_failed(processing_entry)
+            raise
         finally:
             ## FIXME - not sure I need to do this either ...
             ## wil process better handle any problem here?
