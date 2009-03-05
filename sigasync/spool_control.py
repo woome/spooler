@@ -214,6 +214,28 @@ def status(opts):
         for pidfile, pid in pids.iteritems():
             print >> sys.stdout, "%s.pid\t%s" % (pidfile, pid)
 
+def recover(spool, opts):
+    """move crashed spooler jobs back to in queue"""
+    spooler = Spooler(opts)
+    print >> sys.stdout, "attempting to recover spool '%s'" % spool
+    spoolpath = os.path.join(spooler._processing_base, spool)
+    if not os.path.exists(spoolpath):
+        print >> sys.stderr, "error: spool dir '%s' does not exist" % spoolpath
+        sys.exit(1)
+    _pids = getpids(opts)
+    pids = dict((os.path.splitext(os.path.basename(pidfile))[0], pid) for pidfile, pid in _pids)
+    pidfiles = dict((os.path.splitext(os.path.basename(pidfile))[0], pidfile) for pidfile, pid in _pids)
+    if spool in pids and _isprocessrunning(pids[spool]):
+        print >> sys.stderr, "error: spool '%s' is running" % spool
+        sys.exit(1)
+    elif spool in pids:
+        os.remove(pidfiles[spool])
+    for job in os.listdir(spoolpath):
+        os.rename(os.path.join(spoolpath, job), os.path.join(spooler._in, job))
+        print >> sys.stdout, "moved job '%s' to in spool" % job
+    os.rmdir(spoolpath)
+    print >> sys.stdout, "successful!"
+
 def start_daemonized(opts):
     kwargs = {
         'err_log': opts.get('-e', '/dev/null'),
@@ -252,13 +274,19 @@ def main(args):
                 start_daemonized(opts)
             else:
                 start(opts)
+        elif 'recover' in args[0:1]:
+            if not args[1:2]:
+                print >> sys.stderr, "you must specify a spool to recover"
+                sys.exit(1)
+            for spool in args[1:]:
+                recover(spool, opts)
         else:
             raise NoCommandError()
 
     except getopt.GetoptError, e:
         raise
     except NoCommandError, e:
-        print >> sys.stdout, """usage: %s [options] start|stop|status
+        print >> sys.stdout, """usage: %s [options] start|stop|status|recover [spool to recover]
         options:
         -D:         do not daemonize
         -e:         error log file
