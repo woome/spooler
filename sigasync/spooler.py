@@ -95,7 +95,10 @@ class Spool(object):
         #self._base = tempfile.mkdtemp(prefix=directory, dir=name)
         self._base = os.path.join(directory, name)
         if not os.path.exists(self._base):
-            raise SpoolDoesNotExist(self._base)
+            # raise SpoolDoesNotExist(self._base)
+            # not sure why the above does this, think it's a legacy thing
+            # from having random spool names
+            os.makedirs(self._base)
 
         if in_spool and os.path.exists(in_spool):
             self._in = in_spool

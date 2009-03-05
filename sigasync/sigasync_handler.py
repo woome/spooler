@@ -3,8 +3,9 @@ try:
     import simplejson
 except ImportError, e:
     from django.utils import simplejson
+from sigasync_spooler import get_spoolqueue
 
-def sigasync_handler(func):
+def sigasync_handler(func, spooler='default'):
     print "sigaync_handler called"
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
@@ -29,8 +30,8 @@ def sigasync_handler(func):
         }
 
         # Submit to the spooler
-        import sigasync_spooler
-        sigasync_spooler.SPOOLER.submit_datum(urlencode(data))
+        spoolqueue = get_spoolqueue(spooler)
+        spoolqueue.submit_datum(urlencode(data))
         
     return continuation
 

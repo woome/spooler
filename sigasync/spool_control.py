@@ -1,7 +1,10 @@
 #!/usr/bin/env python
 from __future__ import with_statement
 import atexit
+import cgi
 import getopt
+from itertools import groupby
+from operator import itemgetter
 import os
 import signal
 from stat import ST_CTIME
@@ -12,7 +15,7 @@ import time
 GRACEFULINT = False
 DO_PROCESS = True
 
-def setup_environment():
+def setup_environment(additional_settings=None):
     """setup our django 'app' environment"""
     import config.importname
     local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
@@ -20,10 +23,11 @@ def setup_environment():
     from django.core.management import setup_environ
     import settings
     setup_environ(settings)
-    try:
-        import config.importname
-    except ImportError, e:
-        pass
+    if additional_settings:
+        from django.conf import settings
+        if type(additionalsettings, type(sys)): # if this is a module
+            additional_settings = dict((k,v) for k,v in additional_settings.__dict__ if k == k.upper())
+        settings.configure(default_settings=settings, **additional_settings)
 
 # tea-leaf'd from django.utils.daemonize
 def become_daemon(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
@@ -102,12 +106,44 @@ def remove_proc_dir(spooler):
     """remove processing dir for spooler"""
     os.rmdir(spooler._processing)
 
+def get_arguments(optdict, key):
+    """get kwargs from our opt dict
+
+    >>> sorted(get_arguments({'-a': 'foo=bar'}, '-a').items())
+    [('foo', 'bar')]
+    >>> sorted(get_arguments({'-a': 'foo=bar&bar=baz'}, '-a').items())
+    [('bar', 'baz'), ('foo', 'bar')]
+    >>> sorted(get_arguments({'-a': ['foo=bar', 'bar=baz']}, '-a').items())
+    [('bar', 'baz'), ('foo', 'bar')]
+    >>> sorted(get_arguments({'-a': ['foo=bar&another=hello', 'bar=baz']}, '-a').items())
+    [('another', 'hello'), ('bar', 'baz'), ('foo', 'bar')]
+
+    """
+    if key not in optdict:
+        return {}
+    val = optdict[key]
+    args = {}
+    if isinstance(val, list):
+        val = '&'.join(val)
+    return opts_to_dict(cgi.parse_qsl(val))
+
+def opts_to_dict(opts):
+    opts.sort(key=itemgetter(0))
+    dict_ = {}
+    for group, vals in groupby(opts, itemgetter(0)):
+        val = [v for k,v in vals]
+        if len(val) > 1:
+            dict_[group] = val
+        elif val:
+            dict_[group] = val[0]
+    return dict_
 
 # get spooler for options dict
 class Spooler(object):
     def __new__(cls, opts):
         if not hasattr(cls, 'spooler'):
-            cls.spooler = named(opts.get('-m', 'sigasync.sigasync_spooler.SPOOLER'))
+            _Spool = named(opts.get('-m', 'sigasync.sigasync_spooler.get_spoolqueue'))
+            cls.spooler = _Spool(**get_arguments(opts, '-a'))
             # register function to remove processing dir when we exit
             atexit.register(remove_proc_dir, cls.spooler)
         return cls.spooler
@@ -203,8 +239,8 @@ class NoCommandError(Exception):
 
 def main(args):
     try:
-        opts, args = getopt.getopt(args, 'Dle:o:s:m:', ['nodjango', 'in'])
-        opts = dict(opts)
+        opts, args = getopt.getopt(args, 'Dle:o:s:m:a:', ['nodjango', 'in'])
+        opts = opts_to_dict(opts)
         if '--nodjango' not in args:
             setup_environment()
         if 'stop' in args[0:1]:
@@ -228,11 +264,16 @@ def main(args):
         -e:         error log file
         -o:         stdout log file
         -s <num>:   number of seconds for each sleep loop. default 1
-        -m:         python path of spool instance. default sigasync.sigasync_spooler.SPOOLER
+        -m:         python path of spool to instantiate/factory method. 
+                        default sigasync.sigasync_spooler.get_spoolqueue
+        -a:         args to constructor/factory. key=value
+                        can be used multiple times or qs style ('&' sep.)
         --nodjango: do no load django environment
         --in:       list incoming jobs in status
 
-        """ % sys.argv[0]
+        example: %s -m sigasync.sigasync_spooler.get_spoolqueue -a name=default -D start
+
+        """ % (sys.argv[0], sys.argv[0])
 
 
 if __name__ == '__main__':

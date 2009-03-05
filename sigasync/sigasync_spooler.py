@@ -10,6 +10,19 @@ from spooler import Spool
 from spooler import SpoolExists
 from spooler import FailError
 
+def _get_queue_name(name):
+    map = settings.SPOOLER_QUEUE_MAPPINGS
+    if name in map:
+        return map[name]
+    elif 'default' in map:
+        return map['default']
+    else:
+        return settings.DEFAULT_SPOOLER_QUEUE_NAME 
+
+def get_spoolqueue(name):
+    qname = _get_queue_name(name)
+    return SigAsyncSpool(qname, directory=settings.SPOOLER_DIRECTORY)
+
 
 class SigAsyncSpool(Spool):
     def __init__(self, name, directory="/tmp", in_spool=None):
@@ -51,11 +64,11 @@ class SigAsyncSpool(Spool):
             data["instance"] = instance
             data["created"] = created
             if 'kwargs' in data:
-		kw = simplejson.loads(data['kwargs']) 
-		if isinstance(kw, dict):
-			for key,val in kw.iteritems():
-				data[key.encode('ascii') if isinstance(key, unicode) else key] = val
-		del data['kwargs']
+                kw = simplejson.loads(data['kwargs']) 
+                if isinstance(kw, dict):
+                    for key,val in kw.iteritems():
+                        data[key.encode('ascii') if isinstance(key, unicode) else key] = val
+                del data['kwargs']
 
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
@@ -74,17 +87,5 @@ class SigAsyncSpool(Spool):
                 transaction.commit()
 
 
-# Std init
-SPOOL_NAME = "sigasync"
-
-# Do we need to manage this with settings? 
-# Only if you want to specifically set the spool directory to use
-# Maybe if you had radically diffrent signal handling requirements you might wanna do that.
-try:
-    SigAsyncSpool.create(SPOOL_NAME)
-except SpoolExists:
-    pass
-
-SPOOLER = SigAsyncSpool(SPOOL_NAME)
-
 # End
+
