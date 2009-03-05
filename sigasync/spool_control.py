@@ -175,6 +175,10 @@ def _isprocessrunning(pid):
     ps = Popen(['ps', '-p', '%s' % pid], stdout=PIPE)
     return bool(Popen(['grep', '%s' % pid], stdin=ps.stdout, stdout=PIPE).communicate()[0])
 
+def get_spoolname_from_pidfile(pidfile):
+    fn = os.path.basename(pidfile)
+    return os.path.splitext(fn)[0]
+
 def get_spool_info(spooldir):
     jobs = os.listdir(spooldir)
     jobfn = lambda job: os.path.join(spooldir, job)
@@ -190,7 +194,7 @@ def get_spool_info(spooldir):
 def status(opts):
     """get status of spooler by looking in processing directory"""
     spooler = Spooler(opts)
-    pids = dict((os.path.splitext(os.path.basename(pidfile))[0], pid) for pidfile, pid in getpids(opts))
+    pids = dict((get_spoolname_from_pidfile(pidfile), pid) for pidfile, pid in getpids(opts))
     prgen = os.walk(spooler._processing_base)
     root, spools, _ignore = prgen.next()
     print >> sys.stdout, "spool\t\tjobs\tmax age (s)\tstatus"
@@ -214,6 +218,19 @@ def status(opts):
         for pidfile, pid in pids.iteritems():
             print >> sys.stdout, "%s.pid\t%s" % (pidfile, pid)
 
+def flushpids(opts):
+    """delete orphaned pidfiles"""
+    spooler = Spooler(opts)
+    pids = getpids(opts)
+    for pidfile, pid in pids:
+        if not _isprocessrunning(pid):
+            spool = get_spoolname_from_pidfile(pidfile)
+            if os.path.exists(os.path.join(spooler._processing_base, spool)):
+                print >> sys.stdout, "crashed spool '%s' needs recovering" % spool
+            else:
+                os.remove(pidfile)
+                print >> sys.stdout, "removed pidfile: %s" % pidfile
+
 def recover(spool, opts):
     """move crashed spooler jobs back to in queue"""
     spooler = Spooler(opts)
@@ -222,9 +239,9 @@ def recover(spool, opts):
     if not os.path.exists(spoolpath):
         print >> sys.stderr, "error: spool dir '%s' does not exist" % spoolpath
         sys.exit(1)
-    _pids = getpids(opts)
-    pids = dict((os.path.splitext(os.path.basename(pidfile))[0], pid) for pidfile, pid in _pids)
-    pidfiles = dict((os.path.splitext(os.path.basename(pidfile))[0], pidfile) for pidfile, pid in _pids)
+    _pids = list(getpids(opts))
+    pids = dict((get_spoolname_from_pidfile(pidfile), pid) for pidfile, pid in _pids)
+    pidfiles = dict((get_spoolname_from_pidfile(pidfile), pidfile) for pidfile, pid in _pids)
     if spool in pids and _isprocessrunning(pids[spool]):
         print >> sys.stderr, "error: spool '%s' is running" % spool
         sys.exit(1)
@@ -280,13 +297,15 @@ def main(args):
                 sys.exit(1)
             for spool in args[1:]:
                 recover(spool, opts)
+        elif 'flushpids' in args[0:1]:
+            flushpids(opts)
         else:
             raise NoCommandError()
 
     except getopt.GetoptError, e:
         raise
     except NoCommandError, e:
-        print >> sys.stdout, """usage: %s [options] start|stop|status|recover [spool to recover]
+        print >> sys.stdout, """usage: %s [options] start|stop|status|recover|flushpids [spool to recover]
         options:
         -D:         do not daemonize
         -e:         error log file
