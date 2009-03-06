@@ -32,6 +32,8 @@ def sigasync_handler(func, spooler='default'):
         # Submit to the spooler
         spoolqueue = get_spoolqueue(spooler)
         spoolqueue.submit_datum(urlencode(data))
+        if not getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+            spoolqueue.process()
         
     return continuation
 
