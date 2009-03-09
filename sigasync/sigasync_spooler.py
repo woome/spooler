@@ -9,6 +9,7 @@ from django.db import transaction
 from spooler import Spool
 from spooler import SpoolExists
 from spooler import FailError
+import logging
 
 def _get_queue_name(name):
     map = settings.SPOOLER_QUEUE_MAPPINGS
@@ -36,6 +37,7 @@ class SigAsyncSpool(Spool):
         os.rename(entry, os.path.join(self._failed, os.path.basename(entry)))
 
     def execute(self, processing_entry):
+        logger = logging.getLogger("sigasync_spooler.execute")
         try:
             fd = open(processing_entry)
             raw_data = fd.read()
@@ -55,7 +57,10 @@ class SigAsyncSpool(Spool):
 
             # Get the instance data
             model = models.get_model(*(data["sender"].split("__")))
-            instance = model.objects.get(id=int(data["instance"]))
+            try:
+                instance = model.objects.get(id=int(data["instance"]))
+            except model.DoesNotExist:
+                raise FailError("%s with id %s not found" % (model, data['instance']))
             created = { 
                 "1": True,
                 "0": False
@@ -73,11 +78,12 @@ class SigAsyncSpool(Spool):
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
         except FailError, e:
+            logger.warning("failed because %s" % str(e))
             self._move_to_failed(processing_entry)
             raise
         finally:
             ## FIXME - not sure I need to do this either ...
-            ## wil process better handle any problem here?
+            ## will process better handle any problem here?
             if fd:
                 try:
                     fd.close()

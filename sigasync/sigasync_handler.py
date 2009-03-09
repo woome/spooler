@@ -5,6 +5,8 @@ except ImportError, e:
     from django.utils import simplejson
 from sigasync_spooler import get_spoolqueue
 
+from django.conf import settings
+
 def sigasync_handler(func, spooler='default'):
     print "sigaync_handler called"
 
