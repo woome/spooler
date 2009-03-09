@@ -16,7 +16,6 @@ DEFAULT_QUEUE_LABEL="x"
 @transaction.commit_manually
 def test_1(request):
     if request.method == "POST":
-        pdb.set_trace()
         s = SigasyncTest1(queue_label=request.POST.get("queuelabel", DEFAULT_QUEUE_LABEL))
         s.save()
         transaction.commit()

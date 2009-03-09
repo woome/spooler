@@ -14,17 +14,17 @@ class SigasyncTest2(models.Model):
 
 
 # Setup the connections to the signal handlers
-import handler
-import sigasync_handler
+from sigasync import handler
+from sigasync import sigasync_handler
 try:
     #post_save.connect(queued_handler.sigasync_handler(handler.test_handler), 
     #                  sender=SigasyncTest1)
     raise Exception("dummy")
 except:
     # pre-django 1.0
-    from django.dispatch import dispatcher
-    signal_handler_proc = sigasync_handler.sigasync_handler(handler.test_handler)
-    dispatcher.connect(signal_handler_proc, 
+    from sigasync.dispatcher import async_connect
+    async_connect(handler.test_handler,
+                       manager='objects',
                        signal=post_save, 
                        sender=SigasyncTest1)
 

@@ -14,7 +14,13 @@ class SigasyncQueue(unittest.TestCase):
     """
 
     def setUp(self):
+        from django.conf import settings
+        settings.DISABLE_SIGASYNC_SPOOL = False
         self.client = Client()
+
+    def tearDown(self):
+        from django.conf import settings
+        settings._import_settings()
 
     def test_queue(self):
         """Make two related objects, 1 of them via the queued_handler"""
@@ -29,10 +35,8 @@ class SigasyncQueue(unittest.TestCase):
         self.assertEquals(response2.status_code, 500)
         
         # Now get the queue to process
-        import pdb
-        pdb.set_trace()
-        from sigasync_spooler import SigAsyncSpool, SPOOL_NAME
-        spooler = SigAsyncSpool(SPOOL_NAME)
+        from sigasync.sigasync_spooler import get_spoolqueue
+        spooler = get_spoolqueue('default')
         spooler.process()
         
         # Now try the retrievel again
