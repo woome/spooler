@@ -8,7 +8,7 @@ import os
 import os.path
 import commands
 import sys
-
+import logging
 import pdb
 
 class SpoolExists(Exception):
@@ -215,7 +215,8 @@ class Spool(object):
         function    - function to call on the entry, by default it is self.execute
         entryfilter - function to test each entry, by default lambda x: x
         """
-
+        
+        logger = logging.getLogger("Spool.process")
         if function == None:
             function = self.execute
 
@@ -233,6 +234,7 @@ class Spool(object):
                 except FailError, e:
                     pass
                 except Exception, e:
+                    logger.error("failed because %s" % str(e))
                     print >>sys.stderr, "encountered error: %s" % e
                     self._move_to_incomming(processing_entry)
                 else:
