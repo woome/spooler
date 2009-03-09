@@ -320,7 +320,6 @@ class SpoolerTest(unittest.TestCase):
         """Test the mounted spooler
         """
 
-        pdb.set_trace()
 
         spool_name = "test2"
         try:
