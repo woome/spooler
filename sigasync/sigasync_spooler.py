@@ -48,6 +48,7 @@ class SigAsyncSpool(Spool):
             # Get the func
             func_name = data["func_name"]
             func_module = data["func_module"]
+            
             function_object = {}
             exec "import %s ; func_obj=%s.%s" % (func_module, func_module, func_name) in function_object
             del data["func_name"]
@@ -55,7 +56,12 @@ class SigAsyncSpool(Spool):
 
             # Get the instance data
             model = models.get_model(*(data["sender"].split("__")))
-            instance = model.objects.get(id=int(data["instance"]))
+            if 'manager' in data:
+                manager = data['manager']
+                del data['manager']
+            else:
+                manager = 'objects'
+            instance = getattr(model, manager).get(id=int(data["instance"]))
             created = { 
                 "1": True,
                 "0": False

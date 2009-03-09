@@ -4,8 +4,9 @@ try:
 except ImportError, e:
     from django.utils import simplejson
 from sigasync_spooler import get_spoolqueue
+from django.conf import settings
 
-def sigasync_handler(func, spooler='default'):
+def sigasync_handler(func, spooler='default', manager='objects'):
     print "sigaync_handler called"
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
@@ -27,6 +28,7 @@ def sigasync_handler(func, spooler='default'):
                 False: "0"
                 }.get(created, "0"),
             "kwargs": kwargs_data,
+            "manager": manager,
         }
 
         # Submit to the spooler
