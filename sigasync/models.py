@@ -24,7 +24,6 @@ except:
     # pre-django 1.0
     from sigasync.dispatcher import async_connect
     async_connect(handler.test_handler,
-                       manager='objects',
                        signal=post_save, 
                        sender=SigasyncTest1)
 

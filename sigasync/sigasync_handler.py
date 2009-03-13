@@ -7,7 +7,7 @@ from sigasync_spooler import get_spoolqueue
 
 from django.conf import settings
 
-def sigasync_handler(func, spooler='default', manager='objects'):
+def sigasync_handler(func, spooler='default'):
     print "sigaync_handler called"
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
@@ -29,7 +29,6 @@ def sigasync_handler(func, spooler='default', manager='objects'):
                 False: "0"
                 }.get(created, "0"),
             "kwargs": kwargs_data,
-            "manager": manager,
         }
 
         # Submit to the spooler

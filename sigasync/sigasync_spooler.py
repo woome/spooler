@@ -57,15 +57,9 @@ class SigAsyncSpool(Spool):
             del data["func_module"]
 
             # Get the instance data
-            if 'manager' in data:
-                manager = data['manager']
-                del data['manager']
-            else:
-                manager = 'objects'
-            
             model = models.get_model(*(data["sender"].split("__")))
             try:
-                instance = getattr(model, manager).get(id=int(data["instance"]))
+                instance = model.objects.get(id=int(data["instance"]))
             except model.DoesNotExist:
                 raise FailError("%s with id %s not found" % (model, data['instance']))
 
