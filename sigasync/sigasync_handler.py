@@ -1,16 +1,24 @@
 """Send signals over an asynchronous delivery mechanism"""
+
 try:
     import simplejson
 except ImportError, e:
     from django.utils import simplejson
 from sigasync_spooler import get_spoolqueue
 
+import logging
 from django.conf import settings
 
 def sigasync_handler(func, spooler='default'):
-    print "sigaync_handler called"
+    logger = logging.getLogger("sigasync.sigasync_handler")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("called")
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
+        logger = logging.getLogger("sigasync.sigasync_handler.continuation")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("called")
+        
         # We only allow simple types
         # This is from our original PGQ based transport.
 
