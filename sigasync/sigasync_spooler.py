@@ -6,6 +6,7 @@ except ImportError, e:
 from django.conf import settings
 from django.db import models
 from django.db import transaction
+from django.dispatch.dispatcher import _Anonymous
 from spooler import Spool
 from spooler import SpoolExists
 from spooler import FailError
@@ -57,11 +58,15 @@ class SigAsyncSpool(Spool):
             del data["func_module"]
 
             # Get the instance data
-            model = models.get_model(*(data["sender"].split("__")))
-            try:
-                instance = model.objects.get(id=int(data["instance"]))
-            except model.DoesNotExist:
-                raise FailError("%s with id %s not found" % (model, data['instance']))
+            model = _Anonymous() if data["sender"] == '_Anonymous' else \
+                models.get_model(*(data["sender"].split("__")))
+            if isinstance(model, _Anonymous):
+                instance = data["instance"]
+            else:
+                try:
+                    instance = model.objects.get(id=int(data["instance"]))
+                except model.DoesNotExist:
+                    raise FailError("%s with id %s not found" % (model, data['instance']))
 
             created = { 
                 "1": True,
