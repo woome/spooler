@@ -234,6 +234,8 @@ class Spool(object):
                 except FailError, e:
                     pass
                 except Exception, e:
+                    import pdb
+                    pdb.set_trace()
                     logger.error("failed because %s" % str(e))
                     print >>sys.stderr, "encountered error: %s" % e
                     self._move_to_incomming(processing_entry)
