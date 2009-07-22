@@ -235,7 +235,7 @@ class Spool(object):
                     pass
                 except Exception, e:
                     logger.error("failed because %s" % str(e))
-                    print >>sys.stderr, "encountered error: %s" % e
+                    print >>sys.stderr, "encountered error: %s whilst processing %s" % (e, function)
                     self._move_to_incomming(processing_entry)
                 else:
                     self._move_to_outgoing(processing_entry)
