@@ -17,6 +17,7 @@ DO_PROCESS = True
 
 def setup_environment(additional_settings=None):
     """setup our django 'app' environment"""
+    sys.path.insert(0, os.getcwd())
     import config.importname
     local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
     sys.path.insert(0, getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg')))
