@@ -87,7 +87,7 @@ class SigAsyncSpool(Spool):
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
             taken = time.time() - start
-            logger.info('time taken: %s %s.%s %s %s' % (taken, func_module, func_name, model and model.__name__, instance and instance.id))
+            logger.info('time taken: %s %s.%s %s %s' % (taken, func_module, func_name, getattr(model, '__name__', None), getattr(instance, 'id', None)))
         except FailError, e:
             logger.warning("failed because %s" % str(e))
             self._move_to_failed(processing_entry)
