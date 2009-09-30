@@ -4,8 +4,15 @@
 """
 
 import tempfile
+from datetime import datetime
 import os
 import os.path
+from os.path import join as pathjoin
+from os.path import exists as pathexists
+from os.path import basename
+from os.path import dirname
+from glob import iglob 
+from stat import *
 import commands
 import sys
 import logging
@@ -62,14 +69,18 @@ class Spool(object):
 
     def create(name, directory="/tmp"):
         base = os.path.join(directory, name)
-        if os.path.exists(base):
+        if pathexists(base):
             raise SpoolExists(base)
         else:
             os.makedirs(base)
 
     create = staticmethod(create)
 
-    def __init__(self, name, directory="/tmp", in_spool=None):
+    def __init__(self, name, 
+                 directory="/tmp", 
+                 in_spool=None,
+                 shard_out=False,
+                 entry_filter=lambda entry:entry):
         """Create a reference to a spooler.
 
         If the in_spool is specified it is used as the input spooler.
@@ -82,49 +93,52 @@ class Spool(object):
         If the spooler detects that the in_spool does not exist then
         the default is used.
 
+        The spooler can also auto shard the output directory so that
+        completed files are stored into a directory structure like:
+
+           spoolerhome/output/YYYYMMDDHH
+
+        This is most useful when the spooler is the last in a chain
+        and the files are meerly notifications of success.
+
         Arguments:
         name is the name of the spooler, if it exists it will be reused.
 
         Keyword arguments:
         directory - the directory to make the spooler working directorys on.
         in_spool  - the directory to use as the in_spool, if None then a default is used.
+        shard_out - causes the output directories to be sharded
         """
 
-        # We shouldn't actually create a new spool every time
-        # we want a fixed spool, the processing dir is the bit that changes
-        #self._base = tempfile.mkdtemp(prefix=directory, dir=name)
-        self._base = os.path.join(directory, name)
-        if not os.path.exists(self._base):
-            # raise SpoolDoesNotExist(self._base)
-            # not sure why the above does this, think it's a legacy thing
-            # from having random spool names
-            os.makedirs(self._base)
-
-        if in_spool and os.path.exists(in_spool):
+        self._base = pathjoin(directory, name)
+        self._out = pathjoin(self._base, "out")
+        self._processing_base = pathjoin(self._base, "processing")
+        self._failed = pathjoin(self._base, "failed")
+        self._entryfilter = entry_filter
+        self._shard_out = shard_out
+        if in_spool:
             self._in = in_spool
         else:
-            self._in = os.path.join(self._base, "in")
-            if not os.path.exists(self._in):
-                os.makedirs(self._in)
+            self._in = pathjoin(self._base, "in")
 
-        self._out = os.path.join(self._base, "out")
-        if not os.path.exists(self._out):
-            os.makedirs(self._out)
-
-        self._processing_base = os.path.join(self._base, 'processing')
-        if not os.path.isdir(self._processing_base):
-            os.makedirs(self._processing_base)
+        # Ensure the directories are there
+        for p in [self._in,
+                  self._out
+                  self._processing_base,
+                  self._failed]
+            if pathexists(p):
+                os.makedirs(p)
 
     class _LazyProcessingDescriptor(object):
-        """this is here as a little hack to prevent the spooler instance from creating
-        a processing directory automatically at instantiation.
+        """Prevent the spooler instance from ore-creating processing dir.
 
-        need a special class because i want a non-data descriptor, unlike property()
-
+        Need a special class because i want a non-data descriptor,
+        unlike property()
         """
         def __get__(self, obj, type=None):
             obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
             return obj._processing
+
     _processing = _LazyProcessingDescriptor()
 
 
@@ -133,6 +147,7 @@ class Spool(object):
         """the null executer just passes"""
         pass
 
+    # Informational methods
     def get_out_spool(self):
         """Returns the full path of the output spool.
 
@@ -147,16 +162,35 @@ class Spool(object):
         commands.getstatus("rm -rf %s" % self._base)
 
     def _move_to_incomming(self, entry):
-        os.rename(entry, os.path.join(self._in, os.path.basename(entry)))
+        os.rename(entry, pathjoin(self._in, basename(entry)))
 
     def _move_to_processing(self, entry):
         # This can fail because the incoming has gone away
         # (maybe it was processed by another job)
-        os.rename(entry, os.path.join(self._processing, os.path.basename(entry)))
-        return os.path.join(self._processing, os.path.basename(entry))
+        os.rename(entry, pathjoin(self._processing, basename(entry)))
+        return pathjoin(self._processing, basename(entry))
+
+    def _move_to_failed(self, entry):
+        os.rename(entry, pathjoin(self._failed, basename(entry)))
+        return pathjoin(self._failed, basename(entry))
         
     def _move_to_outgoing(self, entry):
-        os.rename(entry, os.path.join(self._out, os.path.basename(entry)))
+        os.rename(entry, pathjoin(self._out, basename(entry)))
+
+    def _make_datum_fname(self):
+        """Return a filename (based in _in) suitable for the spooler.
+
+        This is called by submit_datum. Please override it if you want
+        specific filenames in your spooler.
+
+        The default implementation uses a temp part and a date time
+        representation.
+        """
+        t = datetime.now()
+        return "%s__%s" % (
+            tempfile.mktemp(dir=self._in),
+            "%s%d" % (t.strftime("%Y%m%d%H%M%S"), t.microsecond)
+            )
 
     def submit_datum(self, datum):
         """Submit the specified datum to the spooler without having to worry about filenames.
@@ -169,8 +203,9 @@ class Spool(object):
         This method is not atomic and so is slightly dangerous.
         """
         
-        ### FIXME:: possibly this should create a file somewhere else and then call submit on it.
-        target_name = os.path.join(self._in, tempfile.mktemp(dir=self._in))
+        ### FIXME:: possibly this should create a file 
+        ### somewhere else and then call submit on it.
+        target_name = pathjoin(self._in, self._make_datum_fname())
         fd = None
         try:
             fd = open(target_name, "w")
@@ -189,15 +224,28 @@ class Spool(object):
         location; if 'mv' is False then it is simply symlinked.
         """
 
-        target_name = os.path.join(self._in, tempfile.mktemp(dir=self._in))
+        target_name = pathjoin(self._in, tempfile.mktemp(dir=self._in))
         if mv:
             os.rename(filename, target_name)
         else:
             os.symlink(filename, target_name)
 
-    def process(self, 
-                function=None,
-                entryfilter=lambda entry: entry):
+    def _incoming(self):
+        entries = iglob(pathjoin(self._in, "*"))
+        count = 0
+        while True:
+            try:
+                if count > 100:
+                    raise StopIteration()
+                entry = entries.next()
+            except StopIteration:
+                # Make a new one
+                entries = iglob(pathjoin(self._in, "*"))
+            else:
+                count += 1
+                yield entry
+
+    def process(self):
         """Process the spool.
 
         Entrys to process are captured from the inspool and tested
@@ -208,20 +256,23 @@ class Spool(object):
 
         On success entrys are moved to the outgoing spool.
 
-        On failure entrys are moved back to incomming.
+        On failure entrys are moved to the failure spool.
 
         Keyword arguments:
 
         function    - function to call on the entry, by default it is self.execute
         entryfilter - function to test each entry, by default lambda x: x
         """
-        
         logger = logging.getLogger("Spool.process")
         if function == None:
             function = self.execute
 
-        for entry in filter(entryfilter,
-                            [os.path.join(self._in, direntry) for direntry in os.listdir(self._in)]):
+        # change
+        # this listdir needs to be changed so that it can run concurrently
+        for entry in self._incoming():
+#[pathjoin(self._in, direntry) \
+                     #     for direntry in os.listdir(self._in) \
+                     #     if entryfilter(direntry)]):
             try:
                 processing_entry = self._move_to_processing(entry)
             except Exception, e:
@@ -231,15 +282,11 @@ class Spool(object):
                 # The entry was moved to our processing dir so try and execute the job
                 try:
                     function(processing_entry)
-                except FailError, e:
-                    pass
                 except Exception, e:
                     logger.error("failed because %s" % str(e))
-                    print >>sys.stderr, "encountered error: %s" % e
-                    self._move_to_incomming(processing_entry)
+                    self._move_to_failed(processing_entry)
                 else:
                     self._move_to_outgoing(processing_entry)
-
 
 
 def make_cp_fn(destination):
@@ -256,7 +303,7 @@ def make_cp_fn(destination):
 
     def fn(entry):
         src_fd = open(entry)
-        dest_fd = open(os.path.join(destination, os.path.basename(entry)), "w")
+        dest_fd = open(pathjoin(destination, basename(entry)), "w")
         data_buf = src_fd.read(5000)
         while data_buf != "":
             dest_fd.write(data_buf)
@@ -299,11 +346,11 @@ class SpoolerTest(unittest.TestCase):
         # Make a spool
         s=Spool("test")
         # Submit the pre-existing file to it
-        s.submit(os.path.join(os.getcwd(), submit_filename))
+        s.submit(pathjoin(os.getcwd(), submit_filename))
         # Process with the defaults
         s.process()
         # Now assert it's gone to the output
-        dc = [os.path.join(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
+        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
         try:
             fd = open(dc[0])
             content = fd.read()
@@ -332,7 +379,7 @@ class SpoolerTest(unittest.TestCase):
         os.makedirs(spooler_in_dir)
 
         # Create the pre-existing file which the spooler will process
-        submit_filename = os.path.join(spooler_in_dir, "aaaa_spooler_test_file")
+        submit_filename = pathjoin(spooler_in_dir, "aaaa_spooler_test_file")
         try:
             fd = open(submit_filename, "w")
         except Exception, e:
@@ -347,7 +394,7 @@ class SpoolerTest(unittest.TestCase):
         # Process with the defaults
         s.process()
         # Now assert it's gone to the output
-        dc = [os.path.join(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
+        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
         try:
             fd = open(dc[0])
             content = fd.read()
