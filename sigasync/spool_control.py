@@ -29,6 +29,8 @@ def setup_environment(additional_settings=None):
         if type(additionalsettings, type(sys)): # if this is a module
             additional_settings = dict((k,v) for k,v in additional_settings.__dict__ if k == k.upper())
         settings.configure(default_settings=settings, **additional_settings)
+    # django signals attachment for spooler
+    import woome.global_signals_connector
 
 # tea-leaf'd from django.utils.daemonize
 def become_daemon(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
