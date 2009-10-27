@@ -270,9 +270,9 @@ def start_daemonized(opts):
     run(spooler, sleep_secs=opts.get('-s', 1))
 
 def start(opts):
-    spooler = Spooler(opts)
-    run(spooler, sleep_secs=opts.get('-s', 1))
-
+    # TODO: load via named
+    from sigasync import spooler
+    container = spooler.SpoolContainer()
 
 class NoCommandError(Exception):
     pass

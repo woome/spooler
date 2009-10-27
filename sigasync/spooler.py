@@ -3,6 +3,7 @@
 """Spooler stuff
 """
 
+from __future__ import with_statement
 import tempfile
 from datetime import datetime
 import os
@@ -12,11 +13,17 @@ from os.path import exists as pathexists
 from os.path import basename
 from os.path import dirname
 from glob import iglob 
-from stat import *
+from time import sleep
+import signal
+import atexit
 import commands
 import sys
 import logging
 import pdb
+from itertools import repeat
+from multiprocessing import Process
+
+SLEEP_TIME = 0.1  # seconds
 
 class SpoolExists(Exception):
     pass
@@ -28,6 +35,125 @@ class FailError(Exception):
     """fail the entry"""
     pass
 
+
+class SpoolContainer(object):
+    """Spooler container
+    Contains the spools, manages processes, etc."""
+    
+    def __init__(self, directory=None):
+        self._children = set()
+        self._base = directory
+        self._should_exit = False
+
+        self._read_config()
+        self._start_spools()
+        signal.signal(signal.SIGINT, self.exit)
+        self.run()
+
+    # TODO: Factor out Django-specific config
+    def _read_config(self):
+        """Pull data from config into local data structures."""
+        from django.conf import settings
+        # Allow base directory to be overridden (useful for testing)
+        if self._base is None:
+            self._base = settings.SPOOLER_DIRECTORY
+        print "Setting up in directory: %s" % self._base
+        # The keys are logical queues, the values are real queues
+        queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
+        qdict = {}
+        for queue in queues:
+            queue_dir = pathjoin(self._base, queue)
+            in_, out, retry, fail = [pathjoin(queue_dir, d) for d in
+                                     ['in', 'out', 'retry', 'failed']]
+            qdict[queue] = {'incoming': in_,
+                            'outgoing': out,
+                            'failure': retry,
+                            'nprocs': 3, # TODO get from config
+                            'procs': []}
+            qdict[queue+'_retry'] = {'incoming': retry,
+                                     'outgoing': out,
+                                     'failure': fail,
+                                     'nprocs': 1,
+                                     'procs': []}
+        self._queues = qdict
+
+    def _start_spools(self):
+        for queue, conf in self._queues.iteritems():
+            for n in range(conf['nprocs']):
+                self._start_spool(queue)
+
+    def _start_spool(self, queue):
+        process = Process(target=self.spool_process,
+                          args=(queue, self._queues[queue], Spool))
+        process.daemon = True
+        process.start()
+        self._queues[queue]['procs'].append(process)
+        self._children.add(process)
+        return process
+
+    def run(self):
+        while not self._should_exit:
+            # check status of spools
+            for queue, dict_ in self._queues.iteritems():
+                procs = dict_['procs']
+                for p in procs[:]:
+                    if not p.is_alive():
+                        if p.exitcode != 0:
+                            print "Exited with code %s" % p.exitcode
+                        procs.remove(p)
+                        self._children.remove(p)
+                        if not self._should_exit:
+                            self._start_spool(queue)
+            sleep(SLEEP_TIME)
+
+        # Clean up
+        print "Shutting down child processes..."
+        for p in self._children:
+            os.kill(p.pid, signal.SIGINT)
+        for p in self._children:
+            p.join()
+
+    def exit(self, sig, frame):
+        print "Shutting down spooler..."
+        self._should_exit = True
+
+    def spool_process(self, queue, queue_settings, spool_class):
+        """Run a spool in a processing loop until it should die.
+
+        A spool process should die after it has processed a certain number of
+        jobs. We check it after each call to process(). If the spool caches
+        its incoming jobs list, this means it will finish processing that list
+        even if it exceeds the maximum number of jobs. This lets us put some
+        bound on ordering.
+
+        """
+        spool = spool_class(queue,
+                            directory=self._base,
+                            in_spool=queue_settings['incoming'],
+                            out_spool=queue_settings['outgoing'],
+                            failed_spool=queue_settings['failure'])
+
+        spool.register_hook('processed_entry', process_counter)
+        spool._processed_count = 0
+        spool._process_limit = 10
+
+        def _exit(sig, frame):
+            print "Shutting down spooler %s-%s" % (queue, os.getpid())
+            spool._should_exit = True
+        signal.signal(signal.SIGINT, _exit)
+
+        while not spool._should_exit:
+            spool.process()
+            sleep(SLEEP_TIME)
+        #print "Exiting after %s jobs" % spool._processed_count
+
+    def test_spooler(self, queue):
+        self.spool_process(queue, Spool, self.basedir, 1)
+
+def process_counter(self, *args, **kwargs):
+    self._processed_count += 1
+    if self._processed_count >= self._process_limit:
+        self._should_exit = True
 
 class Spool(object):
     """A generic spool manager.
@@ -45,42 +171,36 @@ class Spool(object):
     You submit jobs to the spool as filenames. They become symlinks to
     your filename in the IN directory.
 
-    When you call process() the entrys in the IN directory are
+    When you call process() the entries in the IN directory are
     processed by moving them to the processing directory and then running execute.
 
     If execute completes without exception the files are moved to the outgoing spool.
 
-    If execute fails then the files are moved back to the incomming spool.
+    If execute fails then the files are moved back to the incoming spool.
 
     == Submitting jobs to the spooler ==
 
     You can either use the submit function to submit jobs to the
-    spooler or you can mount the incomming spool on a directory and
+    spooler or you can mount the incoming spool on a directory and
     have the filesystem cause the submission.
 
     In the former case it is not possible to preserve the filename
     using the spooler alone.
 
     In the latter case the spooler requires that the filenames in the
-    incomming have unique basenames.
+    incoming have unique basenames.
 
-    Directorys can be submitted as well as files.
+    Directories can be submitted as well as files.
     """
-
-    def create(name, directory="/tmp"):
-        base = os.path.join(directory, name)
-        if pathexists(base):
-            raise SpoolExists(base)
-        else:
-            os.makedirs(base)
-
-    create = staticmethod(create)
 
     def __init__(self, name, 
                  directory="/tmp", 
                  in_spool=None,
+                 out_spool=None,
+                 failed_spool=None,
+                 shard_in=False,
                  shard_out=False,
-                 entry_filter=lambda entry:entry):
+                 entry_filter=None):
         """Create a reference to a spooler.
 
         If the in_spool is specified it is used as the input spooler.
@@ -111,36 +231,45 @@ class Spool(object):
         """
 
         self._base = pathjoin(directory, name)
-        self._out = pathjoin(self._base, "out")
+        self._in = in_spool or pathjoin(self._base, "in")
+        self._out = out_spool or pathjoin(self._base, "out")
+        self._failed = failed_spool or pathjoin(self._base, "failed")
+
         self._processing_base = pathjoin(self._base, "processing")
-        self._failed = pathjoin(self._base, "failed")
-        self._entryfilter = entry_filter
+        self._entry_filter = entry_filter
+        self._shard_in = shard_in
         self._shard_out = shard_out
-        if in_spool:
-            self._in = in_spool
-        else:
-            self._in = pathjoin(self._base, "in")
+
+        self._processed_count = 0
+        self._should_exit = False
 
         # Ensure the directories are there
         for p in [self._in,
-                  self._out
+                  self._out,
                   self._processing_base,
-                  self._failed]
-            if pathexists(p):
-                os.makedirs(p)
+                  self._failed]:
+            if not pathexists(p):
+                try:
+                    os.makedirs(p)
+                except OSError, e:
+                    if pathexists(p):
+                        # Another process must have created the directory
+                        pass
+                    else:
+                        raise e
 
     class _LazyProcessingDescriptor(object):
-        """Prevent the spooler instance from ore-creating processing dir.
+        """Prevent the spooler instance from pre-creating processing dir.
 
-        Need a special class because i want a non-data descriptor,
+        Need a special class because I want a non-data descriptor,
         unlike property()
         """
         def __get__(self, obj, type=None):
             obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
+            atexit.register(obj._remove_processing_dir)
             return obj._processing
 
     _processing = _LazyProcessingDescriptor()
-
 
     # You must implement this.
     def execute(self, processing_entry):
@@ -152,267 +281,171 @@ class Spool(object):
         """Returns the full path of the output spool.
 
         This is so you can use this to mount another spooler's
-        incomming spool on this spooler's output spool.
+        incoming spool on this spooler's output spool.
         """
         return self._out
     
     # Helper and instance methods
 
-    def destroy(self):
-        commands.getstatus("rm -rf %s" % self._base)
+    def _remove_processing_dir(self):
+        try:
+            os.rmdir(self._processing)
+        except OSError, e:
+            logging.getLogger("Spool._remove_processing_dir").warning(
+                    "Failed to remove dir %s: %s" % (self._processing, e))
 
-    def _move_to_incomming(self, entry):
-        os.rename(entry, pathjoin(self._in, basename(entry)))
+    def _move_to(self, entry, dir):
+        """Move an entry to the target directory.
+
+        If the file no longer exists this will raise an OSError. This is
+        normal when moving files out of incoming if multiple processes are
+        operating on the same queue.
+
+        Returns the new path of the entry on success.
+
+        """
+        target = pathjoin(dir, basename(entry))
+        os.rename(entry, target)
+        return target
+
+    def _move_to_incoming(self, entry):
+        return self._move_to(entry, self._in)
 
     def _move_to_processing(self, entry):
-        # This can fail because the incoming has gone away
-        # (maybe it was processed by another job)
-        os.rename(entry, pathjoin(self._processing, basename(entry)))
-        return pathjoin(self._processing, basename(entry))
+        return self._move_to(entry, self._processing)
 
     def _move_to_failed(self, entry):
-        os.rename(entry, pathjoin(self._failed, basename(entry)))
-        return pathjoin(self._failed, basename(entry))
+        return self._move_to(entry, self._failed)
         
     def _move_to_outgoing(self, entry):
-        os.rename(entry, pathjoin(self._out, basename(entry)))
+        return self._move_to(entry, self._out)
 
     def _make_datum_fname(self):
         """Return a filename (based in _in) suitable for the spooler.
 
-        This is called by submit_datum. Please override it if you want
-        specific filenames in your spooler.
+        This is called by submit. Please override it if you want specific
+        filenames in your spooler.
 
-        The default implementation uses a temp part and a date time
-        representation.
+        The default implementation uses the datetime, the current pid, and a
+        temp string to avoid name clashes and provide ordering by submission
+        time.
+
         """
         t = datetime.now()
-        return "%s__%s" % (
-            tempfile.mktemp(dir=self._in),
-            "%s%d" % (t.strftime("%Y%m%d%H%M%S"), t.microsecond)
-            )
+        pre = "%s%06d_%s_" % (t.strftime("%Y%m%d%H%M%S"),
+                              t.microsecond,
+                              os.getpid())
+        return tempfile.mktemp(prefix=pre, dir=self._in)
 
     def submit_datum(self, datum):
-        """Submit the specified datum to the spooler without having to worry about filenames.
+        """Submit the datum to the spooler without having to worry about filenames.
 
-        This just does the creation of the file on the user's behalf.
+        This just does the creation of the file on the user's behalf.  The
+        datum is written into a temporary file and the file is submitted.
 
-        The datum is simply written into the created file.
-
-        Warning
-        This method is not atomic and so is slightly dangerous.
         """
-        
-        ### FIXME:: possibly this should create a file 
-        ### somewhere else and then call submit on it.
-        target_name = pathjoin(self._in, self._make_datum_fname())
-        fd = None
-        try:
-            fd = open(target_name, "w")
-            fd.write(datum)
-        finally:
-            if fd:
-                try:
-                    fd.close()
-                except Exception, e:
-                    print >>sys.stderr, "couldn't close the file on submit_datum"
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            f.write(datum)
+
+        self.submit(f.name, mv=True)
 
     def submit(self, filename, mv=False):
-        """Push the file into the spooler for being operated on.
+        """Push the file into the spooler's queue.
 
         If 'mv' is set True then filename is removed from it's src
         location; if 'mv' is False then it is simply symlinked.
-        """
 
-        target_name = pathjoin(self._in, tempfile.mktemp(dir=self._in))
+        """
+        target_name = self._make_datum_fname()
         if mv:
             os.rename(filename, target_name)
         else:
             os.symlink(filename, target_name)
 
     def _incoming(self):
-        entries = iglob(pathjoin(self._in, "*"))
-        count = 0
-        while True:
-            try:
-                if count > 100:
-                    raise StopIteration()
-                entry = entries.next()
-            except StopIteration:
-                # Make a new one
-                entries = iglob(pathjoin(self._in, "*"))
+        """Yield an iterator over incoming file entries."""
+        try:
+            entries = os.listdir(self._in)
+        except OSError, e:
+            if e.errno == 22:
+                # HFS+ sometimes returns errno 22 EINVAL from readdir
+                # after renaming files, so just retry on the next loop
+                return
             else:
-                count += 1
-                yield entry
+                raise e
+        entries = [pathjoin(self._in, e) for e in entries]
+        entries = filter(self._entry_filter, entries)
+        for entry in entries:
+            yield entry
 
-    def process(self):
+    def process(self, function=None):
         """Process the spool.
 
-        Entrys to process are captured from the inspool and tested
-        with the 'entryfilter'.
+        Entries to process are captured from the inspool and tested with the
+        entry_filter (supplied as a keyword argument to __init__) Only entries
+        present when this method is called will be processed.
 
-        If they pass the 'entryfilter' they are moved one by one to
-        the processing spool and the 'function' is called on each.
+        If they pass entry_filter they are moved one by one to the processing
+        spool and the 'function' is called on each.
 
-        On success entrys are moved to the outgoing spool.
+        On success entries are moved to the outgoing spool.
 
-        On failure entrys are moved to the failure spool.
+        On failure entries are moved to the failure spool.
 
-        Keyword arguments:
+        Keyword arguments: function - function to call on the entry, by default
+        it is self.execute
 
-        function    - function to call on the entry, by default it is self.execute
-        entryfilter - function to test each entry, by default lambda x: x
         """
         logger = logging.getLogger("Spool.process")
-        if function == None:
+        if function is None:
             function = self.execute
 
-        # change
-        # this listdir needs to be changed so that it can run concurrently
         for entry in self._incoming():
-#[pathjoin(self._in, direntry) \
-                     #     for direntry in os.listdir(self._in) \
-                     #     if entryfilter(direntry)]):
+            if self._should_exit:
+                return
             try:
                 processing_entry = self._move_to_processing(entry)
-            except Exception, e:
-                # Maybe the incoming entry was moved away by another job?
-                print >>sys.stderr, "processing %s failed because it was gone" % entry
+            except OSError, e:
+                if e.errno == 2:
+                    # '[Errno 2] No such file or directory'
+                    # The file was moved, probably by another spool process
+                    pass
+                else:
+                    raise e
             else:
-                # The entry was moved to our processing dir so try and execute the job
                 try:
                     function(processing_entry)
                 except Exception, e:
-                    logger.error("failed because %s" % str(e))
+                    logger.error("failed with error: %s" % e)
                     self._move_to_failed(processing_entry)
                 else:
                     self._move_to_outgoing(processing_entry)
+                    self._call_hook('processed_entry')
+        
+        self._call_hook('finished_incoming')
 
 
-def make_cp_fn(destination):
-    """Make a process function that can be used to copy files to destination.
+    # Functions for using hooks
 
-    For example:
-
-    s=Spool("copier")
-    s.submit(filename1)
-    s.submit(filename2)
-    s.submit(filename3)
-    s.process(make_cp_fn("/home/nferrier/dest"))
-    """
-
-    def fn(entry):
-        src_fd = open(entry)
-        dest_fd = open(pathjoin(destination, basename(entry)), "w")
-        data_buf = src_fd.read(5000)
-        while data_buf != "":
-            dest_fd.write(data_buf)
-            data_buf = src_fd.read(5000)
-        src_fd.close()
-        dest_fd.close()
-    return fn
-
-
-import unittest
-
-class SpoolerTest(unittest.TestCase):
-    
-    def test_standard_submit(self):
-        """This tests the submit function of the spooler.
-
-        The test make a file and then submits it to a spooler. The spooler
-        processes the file with the default (no-op) processing.
-        """
-
+    def _call_hook(self, event, *args, **kwargs):
         try:
-            Spool.create("test1")
-        except SpoolExists:
-            try:
-                os.makedirs("dest")
-            except:
-                pass
-
-        # Make a file to submit
-        submit_filename = "/tmp/aaaa_spooler_test_file"
-        try:
-            fd = open(submit_filename, "w")
-        except Exception, e:
-            assert False, "test1: the submit file %s could not be created?" % submit_filename
-        else:
-            print >>fd, "hello!"
-        finally:
-            fd.close()
-
-        # Make a spool
-        s=Spool("test")
-        # Submit the pre-existing file to it
-        s.submit(pathjoin(os.getcwd(), submit_filename))
-        # Process with the defaults
-        s.process()
-        # Now assert it's gone to the output
-        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
-        try:
-            fd = open(dc[0])
-            content = fd.read()
-        except Exception:
-            assert False, "test1: the processed file didn't arrive"
-        else:
-            assert content == "hello!\n" ## we print it, so it has a newline on the end
-        finally:
-            commands.getstatus("rm -rf %s" % submit_filename)
-            fd.close()
-
-
-    def test2():
-        """Test the mounted spooler
-        """
-
-
-        spool_name = "test2"
-        try:
-            Spool.create(spool_name)
-        except SpoolExists:
+            hooks = self._hooks[event]
+        except (AttributeError, KeyError):
             pass
-
-        # Make a directory to submit
-        spooler_in_dir = "/tmp/test2_spooler_in"
-        os.makedirs(spooler_in_dir)
-
-        # Create the pre-existing file which the spooler will process
-        submit_filename = pathjoin(spooler_in_dir, "aaaa_spooler_test_file")
-        try:
-            fd = open(submit_filename, "w")
-        except Exception, e:
-            assert False, "test1: the submit file %s could not be created?" % submit_filename
         else:
-            print >>fd, "hello!"
-        finally:
-            fd.close()
+            for f in self._hooks[event]:
+                try:
+                    f(self, *args, **kwargs)
+                except Exception:
+                    # TODO: configurable failure behavior
+                    raise
 
-        # Make a spool
-        s=Spool(spool_name, in_spool=spooler_in_dir)
-        # Process with the defaults
-        s.process()
-        # Now assert it's gone to the output
-        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
+    def register_hook(self, event, function):
         try:
-            fd = open(dc[0])
-            content = fd.read()
-        except Exception:
-            assert False, "test1: the processed file didn't arrive"
-        else:
-            assert content == "hello!\n" ## we print it, so it has a newline on the end
-        finally:
-            commands.getstatus("rm -rf %s" % spooler_in_dir)
-            fd.close()
-
-
-
-# Main program        
-#if __name__ == "__main__":
-#    if "test" in sys.argv:
-#        #test1()
-#        #test2()
-#        pass
+            self._hooks[event].append(function)
+        except KeyError:
+            self._hooks[event] = [function]
+        except AttributeError:
+            self._hooks = {event: [function]}
 
 # End
