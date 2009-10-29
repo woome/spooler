@@ -35,15 +35,63 @@ class FailError(Exception):
     """fail the entry"""
     pass
 
+class SpoolManager(object):
+    """Provide hooks to manage the lifecycle of a Spool."""
+
+    def __init__(self):
+        self.spool = None
+        self._should_stop = False
+
+    def start_spool(self, queue):
+        pass
+
+    def stop(self, spool):
+        self._should_stop = True
+
+    # Hook methods, to be called by a Spool
+    # All hook methods take the calling Spool as the first non-self argument
+
+    def created_spool(self, spool, incoming, outgoing, failed):
+        """Notify that the spool has been created."""
+        pass
+
+    def started_processing(self, spool, incoming):
+        """Notify that processing on a list of entries has begun."""
+        pass
+
+    def created_processing(self, spool, processing):
+        """Notify that the processing directory has been created."""
+        pass
+
+    def processed_entry(self, spool, entry):
+        """Notify that an entry has been successfully processed."""
+        pass
+
+    def failed_entry(self, spool, entry):
+        """Notify that an entry has failed to process."""
+        pass
+
+    def finished_processing(self, spool):
+        """Notify that the spool has finished processing a list."""
+        pass
+
+    def should_stop(self, spool):
+        return self._should_stop
+
 
 class SpoolContainer(object):
     """Spooler container
     Contains the spools, manages processes, etc."""
     
-    def __init__(self, directory=None):
+    def __init__(self, manager, directory=None):
         self._children = set()
         self._base = directory
         self._should_exit = False
+
+        if isinstance(manager, type):
+            self.manager = manager()
+        else:
+            self.manager = manager
 
         self._read_config()
         self._start_spools()
@@ -133,10 +181,6 @@ class SpoolContainer(object):
                             out_spool=queue_settings['outgoing'],
                             failed_spool=queue_settings['failure'])
 
-        spool.register_hook('processed_entry', process_counter)
-        spool._processed_count = 0
-        spool._process_limit = 10
-
         def _exit(sig, frame):
             print "Shutting down spooler %s-%s" % (queue, os.getpid())
             spool._should_exit = True
@@ -150,10 +194,6 @@ class SpoolContainer(object):
     def test_spooler(self, queue):
         self.spool_process(queue, Spool, self.basedir, 1)
 
-def process_counter(self, *args, **kwargs):
-    self._processed_count += 1
-    if self._processed_count >= self._process_limit:
-        self._should_exit = True
 
 class Spool(object):
     """A generic spool manager.
@@ -193,7 +233,7 @@ class Spool(object):
     Directories can be submitted as well as files.
     """
 
-    def __init__(self, name, 
+    def __init__(self, name, manager
                  directory="/tmp", 
                  in_spool=None,
                  out_spool=None,
@@ -226,9 +266,12 @@ class Spool(object):
 
         Keyword arguments:
         directory - the directory to make the spooler working directorys on.
-        in_spool  - the directory to use as the in_spool, if None then a default is used.
+        in_spool  - the directory to use as the in_spool, if None then a
+                    default is used.
         shard_out - causes the output directories to be sharded
+
         """
+        self.manager = manager
 
         self._base = pathjoin(directory, name)
         self._in = in_spool or pathjoin(self._base, "in")
@@ -258,6 +301,8 @@ class Spool(object):
                     else:
                         raise e
 
+        self.manager.created_spool(self, self._in, self._out, self._failed)
+
     class _LazyProcessingDescriptor(object):
         """Prevent the spooler instance from pre-creating processing dir.
 
@@ -267,6 +312,7 @@ class Spool(object):
         def __get__(self, obj, type=None):
             obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
             atexit.register(obj._remove_processing_dir)
+            obj.manager.created_processing(obj, obj._processing)
             return obj._processing
 
     _processing = _LazyProcessingDescriptor()
@@ -400,8 +446,10 @@ class Spool(object):
         if function is None:
             function = self.execute
 
+        self.manager.started_processing(self, self._in)
+
         for entry in self._incoming():
-            if self._should_exit:
+            if self.manager.should_stop(self):
                 return
             try:
                 processing_entry = self._move_to_processing(entry)
@@ -417,12 +465,14 @@ class Spool(object):
                     function(processing_entry)
                 except Exception, e:
                     logger.error("failed with error: %s" % e)
-                    self._move_to_failed(processing_entry)
+                    failed_entry = self._move_to_failed(processing_entry)
+                    self.manager.failed_entry(self, failed_entry)
                 else:
-                    self._move_to_outgoing(processing_entry)
+                    processed_entry = self._move_to_outgoing(processing_entry)
+                    self.manager.processed_entry(self, processed_entry)
                     self._call_hook('processed_entry')
         
-        self._call_hook('finished_incoming')
+        self.manager.finished_processing(self)
 
 
     # Functions for using hooks
