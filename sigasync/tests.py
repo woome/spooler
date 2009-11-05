@@ -7,12 +7,21 @@ import unittest
 import pdb
 from django.test.client import Client
 from sigasync.spooler import *
+from sigasync.sigasync_spooler import SigAsyncContainer
 from multiprocessing import Process
 from time import sleep
 from os.path import join as pathjoin
 import os
 import signal
 from shutil import rmtree
+from datetime import datetime
+from sigasync.dispatcher import async_connect
+from django.dispatch import dispatcher
+from django.core.cache import cache
+from webapp.models import Person
+
+async_test1 = object()
+async_test2 = object()
 
 class SigasyncQueue(unittest.TestCase):
     """Basic tests for the SigAsync queue
@@ -23,13 +32,13 @@ class SigasyncQueue(unittest.TestCase):
 
     def setUp(self):
         from django.conf import settings
+        self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
         settings.DISABLE_SIGASYNC_SPOOL = False
         self.client = Client()
 
     def tearDown(self):
         from django.conf import settings
-        # XXX This is going to conflict with the testdb setup
-        settings._import_settings()
+        settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
 
     def test_queue(self):
         """Make two related objects, 1 of them via the queued_handler"""
@@ -186,8 +195,8 @@ class MultiprocessingSpoolerTest(unittest.TestCase):
 
         # Set up a SpoolContainer process in a directory we know is empty
         self._spool_dir = tempfile.mkdtemp(prefix="testspooler_", dir="/tmp")
-        self._container = Process(target=SpoolContainer,
-                                 kwargs={'directory':self._spool_dir})
+        sc = SpoolContainer(directory=self._spool_dir)
+        self._container = Process(target=sc.run, args=())
         self._container.start()
         super(self.__class__, self).setUp()
 
@@ -219,6 +228,69 @@ class MultiprocessingSpoolerTest(unittest.TestCase):
         sleep(5)
 
     def tearDown(self):
+        os.kill(self._container.pid, signal.SIGINT)
+        self._container.join()
+        rmtree(self._spool_dir)
+        super(self.__class__, self).setUp()
+
+
+def pass_handler(sender, instance, **kwargs):
+    pass
+
+def fail_once(sender, instance, **kwargs):
+    if cache.get('sigasync_fail') is None:
+        cache.set('sigasync_fail', 1, 30*60)
+        raise Exception("lol")
+    else:
+        cache.delete('sigasync_fail')
+        print "Success!"
+        start = cache.get('sigasync_test')
+        print datetime.now() - start
+        cache.set('sigasync_test_finished', 1, 30*60)
+        return
+
+def fail_handler(sender, instance, **kwargs):
+    print "Failing"
+    print datetime.now()
+    raise Exception("lol")
+
+class SigAsyncTest(unittest.TestCase):
+    def setUp(self):
+        from django.conf import settings
+        # Cache settings that we're going to change
+        self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
+        self._spooler_directory = settings.SPOOLER_DIRECTORY
+
+        settings.DISABLE_SIGASYNC_SPOOL = False
+
+        # Pick a queue we know exists
+        self._queue = settings.SPOOLER_QUEUE_MAPPINGS.values()[0]
+
+        # Set up a SpoolContainer process in a directory we know is empty
+        self._spool_dir = tempfile.mkdtemp(prefix="testspooler_", dir="/tmp")
+        settings.SPOOLER_DIRECTORY = self._spool_dir
+        sc = SigAsyncContainer(directory=self._spool_dir)
+        self._container = Process(target=sc.run, args=())
+        self._container.start()
+        super(self.__class__, self).setUp()
+
+    def _test_submit(self):
+        async_connect(fail_once, signal=async_test1, sender=Person)
+        start = datetime.now()
+        cache.set('sigasync_test', start, 30*60)
+        p = Person.objects.all()[0]
+        dispatcher.send(signal=async_test1, sender=Person, instance=p)
+        while cache.get('sigasync_test_finished') is None:
+            sleep(1)
+        cache.delete('sigasync_test')
+        cache.delete('sigasync_test_finished')
+
+    def tearDown(self):
+        from django.conf import settings
+        # Restore settings
+        settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        settings.SPOOLER_DIRECTORY = self._spooler_directory
+
         os.kill(self._container.pid, signal.SIGINT)
         self._container.join()
         rmtree(self._spool_dir)
