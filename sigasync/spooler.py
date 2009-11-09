@@ -20,6 +20,9 @@ from multiprocessing import Process
 
 SLEEP_TIME = 0.1  # seconds
 
+# How frequently to check the load and adjust spool processes
+ADJUST_INTERVAL = timedelta(seconds=60)
+
 class SpoolExists(Exception):
     pass
 
@@ -80,6 +83,7 @@ class SpoolContainer(object):
         self._children = set()
         self._base = directory
         self._should_exit = False
+        self._last_adjusted = datetime.now()
 
         if isinstance(manager, type):
             self.manager = manager()
@@ -99,24 +103,38 @@ class SpoolContainer(object):
         # The keys are logical queues, the values are real queues
         queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
         qdict = {}
+        #import ipdb; ipdb.set_trace()
+        defaults = settings.SPOOLER_DEFAULTS
         for queue in queues:
             queue_dir = pathjoin(self._base, queue)
+            try:
+                qconf = defaults.copy()
+                qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper()))
+            except AttributeError:
+                qconf = defaults
+
             in_, out, retry15, retry60, fail = [pathjoin(queue_dir, d) for d in
                                  ['in', 'out', 'retry15', 'retry60', 'failed']]
             qdict[queue] = {'incoming': in_,
                             'outgoing': out,
                             'failure': retry15,
-                            'nprocs': 3, # TODO get from config
+                            'minprocs': qconf['minprocs'],
+                            'maxprocs': qconf['maxprocs'],
+                            'nprocs': qconf['minprocs'],
                             'procs': []}
             qdict[queue+'_retry15'] = {'incoming': retry15,
                                        'outgoing': out,
                                        'failure': retry60,
+                                       'minprocs': 1,
+                                       'maxprocs': 2,
                                        'nprocs': 1,
                                        'procs': [],
                                        'filter': self._delay_filter(15)}
             qdict[queue+'_retry60'] = {'incoming': retry60,
                                        'outgoing': out,
                                        'failure': fail,
+                                       'minprocs': 1,
+                                       'maxprocs': 2,
                                        'nprocs': 1,
                                        'procs': [],
                                        'filter': self._delay_filter(60)}
@@ -136,10 +154,23 @@ class SpoolContainer(object):
         self._children.add(process)
         return process
 
+    def _adjust_spool(self, queue):
+        qd = self._queues[queue]
+        try:
+            entries = len(os.listdir(qd['incoming']))
+        except OSError, e:
+            print "Error opening %s: %s" % (qd['incoming'], e)
+            return
+        if entries > 100 and qd['nprocs'] < qd['maxprocs']:
+            print "Spawning new process for %s" % queue
+            qd['nprocs'] += 1
+        elif entries < 50 and qd['nprocs'] > qd['minprocs']:
+            print "Removing process for %s" % queue
+            qd['nprocs'] -= 1
+
     def _write_pid(self):
         with open(pathjoin(self._base, '%s.pid' % os.getpid()), 'w') as f:
             f.write("%s" % os.getpid())
-        atexit.register(self._remove_pid)
 
     def _remove_pid(self):
         try:
@@ -151,20 +182,33 @@ class SpoolContainer(object):
     def run(self):
         self._start_spools()
         self._write_pid()
+        atexit.register(self._remove_pid)
         signal.signal(signal.SIGINT, self.exit)
 
         while not self._should_exit:
+            adjusted = False
             # check status of spools
             for queue, dict_ in self._queues.iteritems():
                 procs = dict_['procs']
+                # Clean out dead processes in this queue
                 for p in procs[:]:
                     if not p.is_alive():
                         if p.exitcode != 0:
                             print "Exited with code %s" % p.exitcode
                         procs.remove(p)
                         self._children.remove(p)
-                        if not self._should_exit:
-                            self._start_spool(queue)
+                # Adjust the target number of processes based on load
+                if datetime.now() - self._last_adjusted > ADJUST_INTERVAL:
+                    self._adjust_spool(queue)
+                    adjust = True
+                # Create any new processes needed
+                if not self._should_exit:
+                    for i in range(dict_['nprocs'] - len(procs)):
+                        self._start_spool(queue)
+            if adjusted:
+                self._last_adjusted = datetime.now()
+            # Touch the pid file
+            self._write_pid()
             sleep(SLEEP_TIME)
 
         # Clean up
