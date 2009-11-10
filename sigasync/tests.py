@@ -20,9 +20,6 @@ from django.dispatch import dispatcher
 from django.core.cache import cache
 from webapp.models import Person
 
-async_test1 = object()
-async_test2 = object()
-
 class SigasyncQueue(unittest.TestCase):
     """Basic tests for the SigAsync queue
 
@@ -32,13 +29,19 @@ class SigasyncQueue(unittest.TestCase):
 
     def setUp(self):
         from django.conf import settings
-        self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
-        settings.DISABLE_SIGASYNC_SPOOL = False
+        try:
+            self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
+            settings.DISABLE_SIGASYNC_SPOOL = False
+        except AttributeError:
+            pass
         self.client = Client()
 
     def tearDown(self):
         from django.conf import settings
-        settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        try:
+            settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        except AttributeError:
+            pass
 
     def test_queue(self):
         """Make two related objects, 1 of them via the queued_handler"""
@@ -234,10 +237,16 @@ class MultiprocessingSpoolerTest(unittest.TestCase):
         super(self.__class__, self).setUp()
 
 
+# Some sigasync handlers for testing:
 def pass_handler(sender, instance, **kwargs):
     pass
 
-def fail_once(sender, instance, **kwargs):
+def print_handler(sender, instance, **kwargs):
+    start = cache.get('sigasync_test')
+    print "Processed! in %s" % (datetime.now() - start)
+    cache.set('sigasync_test_finished', 1, 30*60)
+
+def fail_once_handler(sender, instance, **kwargs):
     if cache.get('sigasync_fail') is None:
         cache.set('sigasync_fail', 1, 30*60)
         raise Exception("lol")
@@ -258,10 +267,13 @@ class SigAsyncTest(unittest.TestCase):
     def setUp(self):
         from django.conf import settings
         # Cache settings that we're going to change
-        self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
-        self._spooler_directory = settings.SPOOLER_DIRECTORY
+        try:
+            self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
+            settings.DISABLE_SIGASYNC_SPOOL = False
+        except AttributeError:
+            pass
 
-        settings.DISABLE_SIGASYNC_SPOOL = False
+        self._spooler_directory = settings.SPOOLER_DIRECTORY
 
         # Pick a queue we know exists
         self._queue = settings.SPOOLER_QUEUE_MAPPINGS.values()[0]
@@ -275,7 +287,8 @@ class SigAsyncTest(unittest.TestCase):
         super(self.__class__, self).setUp()
 
     def _test_submit(self):
-        async_connect(fail_once, signal=async_test1, sender=Person)
+        async_test1 = object()
+        async_connect(print_handler, signal=async_test1, sender=Person)
         start = datetime.now()
         cache.set('sigasync_test', start, 30*60)
         p = Person.objects.all()[0]
@@ -288,7 +301,10 @@ class SigAsyncTest(unittest.TestCase):
     def tearDown(self):
         from django.conf import settings
         # Restore settings
-        settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        try:
+            settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        except AttributeError:
+            pass
         settings.SPOOLER_DIRECTORY = self._spooler_directory
 
         os.kill(self._container.pid, signal.SIGINT)

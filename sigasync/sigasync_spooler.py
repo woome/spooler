@@ -65,8 +65,11 @@ class SigAsyncSpool(Spool):
 
         super(SigAsyncSpool, self).__init__(name, manager=manager, **kwargs)
         self.close_transaction_after_execute = False
-        if settings.DISABLE_SIGASYNC_SPOOL:
-            self._processing = self._processing_base
+        try:
+            if settings.DISABLE_SIGASYNC_SPOOL:
+                self._processing = self._processing_base
+        except AttributeError:
+            pass
 
     def execute(self, processing_entry):
         logger = logging.getLogger("sigasync_spooler.execute")
