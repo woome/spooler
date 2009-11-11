@@ -557,7 +557,7 @@ class Spool(object):
                 except Exception, e:
                     failed_entry = self._move_to_failed(processing_entry)
                     self.manager.failed_entry(self, failed_entry)
-                    logger.warning("%s failed with error: %s" % (failed_entry, e))
+                    logger.exception("%s failed with error: %s" % (failed_entry, e))
                 else:
                     processed_entry = self._move_to_outgoing(processing_entry)
                     self.manager.processed_entry(self, processed_entry)
