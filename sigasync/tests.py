@@ -249,7 +249,7 @@ def print_handler(sender, instance, **kwargs):
 def fail_once_handler(sender, instance, **kwargs):
     if cache.get('sigasync_fail') is None:
         cache.set('sigasync_fail', 1, 30*60)
-        raise Exception("lol")
+        raise Exception("Failing once")
     else:
         cache.delete('sigasync_fail')
         print "Success!"
@@ -261,7 +261,7 @@ def fail_once_handler(sender, instance, **kwargs):
 def fail_handler(sender, instance, **kwargs):
     print "Failing"
     print datetime.now()
-    raise Exception("lol")
+    raise Exception("Failing")
 
 class SigAsyncTest(unittest.TestCase):
     def setUp(self):

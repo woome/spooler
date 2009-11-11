@@ -56,7 +56,8 @@ class SpoolManager(object):
 
     def created_processing(self, spool, processing):
         """Notify that the processing directory has been created."""
-        print "Created processing dir %s" % processing
+        logger = logging.getLogger("sigasync.spooler.SpoolManager")
+        logger.info("Created processing dir %s" % processing, extra={'pid': os.getpid()})
         pass
 
     def processed_entry(self, spool, entry):
@@ -146,26 +147,30 @@ class SpoolContainer(object):
                 self._start_spool(queue)
 
     def _start_spool(self, queue):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         process = Process(target=self.spool_process,
                           args=(queue, self._queues[queue]))
         process.daemon = True
         process.start()
         self._queues[queue]['procs'].append(process)
         self._children.add(process)
+        logger.info("Started spool process %s for %s queue."
+                     % (process.pid, queue))
         return process
 
     def _adjust_spool(self, queue):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer._adjust_spool")
         qd = self._queues[queue]
         try:
             entries = len(os.listdir(qd['incoming']))
         except OSError, e:
-            print "Error opening %s: %s" % (qd['incoming'], e)
+            logger.error("Error opening %s: %s" % (qd['incoming'], e))
             return
         if entries > 100 and qd['nprocs'] < qd['maxprocs']:
-            print "Spawning new process for %s" % queue
+            logger.info("Spawning new process for %s" % queue)
             qd['nprocs'] += 1
         elif entries < 50 and qd['nprocs'] > qd['minprocs']:
-            print "Removing process for %s" % queue
+            logger.info("Removing process for %s" % queue)
             qd['nprocs'] -= 1
 
     def _write_pid(self):
@@ -180,6 +185,7 @@ class SpoolContainer(object):
                     "Failed to remove pidfile %s.pid" % os.getpid())
 
     def run(self):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer.run")
         self._start_spools()
         self._write_pid()
         atexit.register(self._remove_pid)
@@ -193,8 +199,12 @@ class SpoolContainer(object):
                 # Clean out dead processes in this queue
                 for p in procs[:]:
                     if not p.is_alive():
-                        if p.exitcode != 0:
-                            print "Exited with code %s" % p.exitcode
+                        if p.exitcode > 0:
+                            logger.warning("Spool %s-%s exited with code %s"
+                                    % (queue, p.pid, p.exitcode))
+                        elif p.exitcode < 0:
+                            logger.warning("Spool %s-%s was killed by signal %s"
+                                    % (queue, p.pid, -1 * p.exitcode))
                         procs.remove(p)
                         self._children.remove(p)
                 # Adjust the target number of processes based on load
@@ -212,7 +222,7 @@ class SpoolContainer(object):
             sleep(SLEEP_TIME)
 
         # Clean up
-        print "Shutting down child processes..."
+        logger.info("Shutting down child processes...")
         for p in self._children:
             try:
                 os.kill(p.pid, signal.SIGINT)
@@ -223,7 +233,8 @@ class SpoolContainer(object):
             p.join()
 
     def exit(self, sig, frame):
-        print "Shutting down spooler..."
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
+        logger.info("Shutting down spooler...")
         self._should_exit = True
 
     def create_spool(self, queue, queue_settings, spool_class=None):
@@ -250,7 +261,8 @@ class SpoolContainer(object):
         spool = self.create_spool(queue, queue_settings)
 
         def _exit(sig, frame):
-            print "Shutting down spooler %s-%s" % (queue, os.getpid())
+            logger = logging.getLogger("sigasync.spooler.SpoolContainer")
+            logger.info("Shutting down spooler %s-%s" % (queue, os.getpid()))
             spool.manager.stop(spool)
         signal.signal(signal.SIGINT, _exit)
 
@@ -354,6 +366,7 @@ class Spool(object):
         else:
             self.manager = manager
 
+        self._name = name
         self._base = pathjoin(directory, name)
         self._in = in_spool or pathjoin(self._base, "in")
         self._out = out_spool or pathjoin(self._base, "out")
@@ -520,7 +533,7 @@ class Spool(object):
         it is self.execute
 
         """
-        logger = logging.getLogger("Spool.process")
+        logger = logging.getLogger("sigasync.spooler.Spool.process")
         if function is None:
             function = self.execute
 
@@ -542,12 +555,13 @@ class Spool(object):
                 try:
                     function(processing_entry)
                 except Exception, e:
-                    logger.error("failed with error: %s" % e)
                     failed_entry = self._move_to_failed(processing_entry)
                     self.manager.failed_entry(self, failed_entry)
+                    logger.warning("%s failed with error: %s" % (failed_entry, e))
                 else:
                     processed_entry = self._move_to_outgoing(processing_entry)
                     self.manager.processed_entry(self, processed_entry)
+                    logger.debug("processed entry %s" % processed_entry)
         
         self.manager.finished_processing(self)
 
@@ -650,7 +664,6 @@ def main():
         -o:         stdout log file
         -s <num>:   number of seconds for each sleep loop. (ignored)
         -m:         python path of spool container to instantiate/factory method. 
-                        default sigasync.sigasync_spooler.get_spoolqueue
         --nodjango: do no load django environment
 
         example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start

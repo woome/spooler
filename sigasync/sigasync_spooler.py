@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 try:
     import simplejson
 except ImportError, e:
@@ -33,18 +34,28 @@ class SigAsyncManager(SpoolManager):
         self._processed_count = 0
         self._failed_count = 0
         self._processed_limit = limit
+        self._last_reported = datetime.now()
+        self._report_interval = timedelta(minutes=5)
 
     def processed_entry(self, spool, entry):
         self._processed_count += 1
+        self._report(spool)
 
     def failed_entry(self, spool, entry):
         self._failed_count += 1
+        self._report(spool)
+
+    def _report(self, spool):
+        if datetime.now() - self._last_reported >= self._report_interval:
+            logger = logging.getLogger("sigasync.sigasync_spooler.SigAsyncManager")
+            logger.info("[queue:%s pid:%s] processed: %s  failed: %s" %
+                           (spool._name, os.getpid(),
+                            self._processed_count, self._failed_count))
 
     def finished_processing(self, spool):
         if self._processed_count >= self._processed_limit:
-            logging.getLogger("sigasync.SigAsyncManager").info(
+            logging.getLogger("sigasync.sigasync_spooler.SigAsyncManager").info(
                     "Stopping spooler after %s jobs" % self._processed_count)
-            print "Stopping spooler after %s jobs" % self._processed_count
             self.stop(spool)
 
 
@@ -72,7 +83,7 @@ class SigAsyncSpool(Spool):
             pass
 
     def execute(self, processing_entry):
-        logger = logging.getLogger("sigasync_spooler.execute")
+        logger = logging.getLogger("sigasync.sigasync_spooler.execute")
         try:
             fd = open(processing_entry)
             raw_data = fd.read()
