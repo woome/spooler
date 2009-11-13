@@ -586,7 +586,7 @@ def daemonize(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
         sys.exit(1)
     os.setsid()
     os.chdir(our_home_dir)
-    os.umask(0)
+    os.umask(022)
 
     # Second fork
     try:
