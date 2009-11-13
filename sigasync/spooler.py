@@ -481,10 +481,13 @@ class Spool(object):
         datum is written into a temporary file and the file is submitted.
 
         """
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(datum)
+        (tmpfd, tmpfname) = tempfile.mkstemp()
+        try:
+            os.write(tmpfd, datum)
+        finally:
+            os.close(tmpfd)
 
-        self.submit(f.name, mv=True)
+        self.submit(tmpfname, mv=True)
 
     def submit(self, filename, mv=False):
         """Push the file into the spooler's queue.
