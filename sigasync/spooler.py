@@ -656,6 +656,8 @@ def main():
                 pid = fh.read()
             try:
                 os.kill(int(pid), signal.SIGINT)
+                # Succesfull kill so remove the pid file
+                os.remove(pathjoin(container._base, f))
                 print "Killing process %s." % pid
             except OSError, e:
                 print "Failed to kill process %s: %s" % (pid, e)
