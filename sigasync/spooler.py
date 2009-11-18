@@ -647,18 +647,26 @@ def main():
     out_log = opts.get('-o', '/dev/null')
 
     if 'start' in args[0:1]:
+        if glob.glob("%s/*.pid" % container._base):
+            print "Failed to start - pid files exist"
+            sys.exit(1)
+
         if '-D' not in opts:
             daemonize(out_log=out_log, err_log=err_log)
         container.run()
+
     elif 'stop' in args[0:1]:
         for f in glob.glob("%s/*.pid" % container._base):
             with open(pathjoin(container._base, f)) as fh:
                 pid = fh.read()
             try:
                 os.kill(int(pid), signal.SIGINT)
+                # Succesfull kill so remove the pid file
+                os.remove(pathjoin(container._base, f))
                 print "Killing process %s." % pid
             except OSError, e:
                 print "Failed to kill process %s: %s" % (pid, e)
+                sys.exit(1)
     else:
         print >> sys.stdout, """usage: %s [options] start
         options:
