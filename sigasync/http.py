@@ -6,6 +6,8 @@ SPOOLERHANDLERS = {
     'emailapp.signals.passwordreset_email_handler':     'emailhighpri',
     'emailapp.signals.verification_email_handler':      'emailhighpri',
     'emailapp.signals.email_handler':                   'emailhighpri',
+    'emailapp.signals.contacts_siteinvites_handler':    'emailhighpri',
+    'emailapp.signals.contacts_friendrequests_handler': 'emailhighpri',
 }
 
 def get_spooler(handler):
