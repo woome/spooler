@@ -1,7 +1,11 @@
 
 
 """Views for sigasync - test stuff only right now"""
+import logging
+import simplejson
+from urllib import urlencode
 
+from django.conf import settings
 from django.db import transaction
 from django.http import HttpRequest
 from django.http import HttpResponse
@@ -9,6 +13,7 @@ from django.http import HttpResponseServerError
 from models import SigasyncTest1
 from models import SigasyncTest2
 
+from sigasync_spooler import get_spoolqueue
 import pdb
 
 DEFAULT_QUEUE_LABEL="x"
@@ -31,5 +36,28 @@ def test_2(request, sigasync_test1_id):
     except SigasyncTest2.DoesNotExist:
         return HttpResponseServerError()
 
-
+def spooler_http_gateway(request, spooler):
+    logger = logging.getLogger("sigasync.views.spooler_http_gateway")
+    kwargs = request.POST.copy()
+    sender = kwargs.pop('sender')[0]
+    instance = kwargs.pop('instance')[0]
+    created = kwargs.pop('created', [None])[0]
+    func_module, _, func_name = kwargs.pop('handler')[0].rpartition('.')
+    data = { 
+        "func_name": func_name,
+        "func_module": func_module,
+        "sender": sender,
+        "instance": instance if instance else None,
+        "created": { 
+            'True': "1",
+            'False': "0"
+        }.get(created, "0"),
+        "kwargs": simplejson.dumps(dict((k, kwargs.get(k)) for k in kwargs)),
+    }
+    spoolqueue = get_spoolqueue(spooler)
+    spoolqueue.submit_datum(urlencode(data))
+    if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+        spoolqueue.process()
+    return HttpResponse('OK')
+        
 # End

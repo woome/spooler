@@ -1,10 +1,16 @@
 
 """Unit tests for sigasync"""
+from __future__ import with_statement
 
+from cgi import parse_qs
 import unittest
 import pdb
 from django.test.client import Client
+from testsupport.woometestcase import WoomeTestCase
+from testsupport.contextmanagers import URLOverride
+from webapp.models import Person
 
+import sigasync.http
 
 class SigasyncQueue(unittest.TestCase):
     """Basic tests for the SigAsync queue
@@ -43,5 +49,56 @@ class SigasyncQueue(unittest.TestCase):
         response3 = self.client.get("/sigasync/v2/%d/" % test_obj_1_id)
         self.assertEquals(response3.status_code, 200)
         self.assertEquals(int(response3.content), test_obj_1_id)
+
+
+class mock_get_spoolqueue(object):
+    def __call__(self, spooler):
+        class MockSpoolQueue(object):
+            def submit_datum(self, data):
+                self.data = parse_qs(data)
+            def process(self):
+                pass
+        sq = MockSpoolQueue()
+        sq.spooler = spooler
+        self.spoolqueue = sq
+        return sq
+
+
+class SigasyncHttp(WoomeTestCase):
+    def test_view_params(self):
+        data = {}
+        def testview(request, spooler):
+            data.update({
+                'spooler': spooler,
+                'data': request.POST.copy(),
+            })
+            from django.http import HttpResponse
+            return HttpResponse('OK')
+        person = self.reg_and_get_person('ht')
+        with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.passwordreset_email_handler',
+                created=True)
+            assert data['spooler'] == 'emailhighpri'
+            assert data['data']['instance'] == str(person.id)
+
+    def test_submitted_datum(self):
+        person = self.reg_and_get_person('ht')
+        from sigasync import views
+        oldview = views.get_spoolqueue
+        spoolqueue = mock_get_spoolqueue()
+        views.get_spoolqueue = spoolqueue
+        try:
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.passwordreset_email_handler',
+                created=True)
+            assert spoolqueue.spoolqueue.spooler == 'emailhighpri'
+            assert spoolqueue.spoolqueue.data['func_name'] == ['passwordreset_email_handler']
+            assert spoolqueue.spoolqueue.data['func_module'] == ['emailapp.signals']
+            assert spoolqueue.spoolqueue.data['sender'] == ['webapp__Person']
+            assert spoolqueue.spoolqueue.data['instance'] == [str(person.id)]
+        finally:
+            views.get_spoolqueue = oldview
+                    
 
 # End
