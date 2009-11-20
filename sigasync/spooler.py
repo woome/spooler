@@ -622,6 +622,8 @@ def setup_django():
     else:
         raise ImportError("Unable to find Django")
 
+    import global_signals_connector
+
 def _import_object(name):
     parts = name.split('.')
     mod_name = '.'.join(parts[:-1])
