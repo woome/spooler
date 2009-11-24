@@ -4,7 +4,7 @@ from __future__ import with_statement
 
 from cgi import parse_qs
 import unittest
-import pdb
+import pdb, simplejson
 from django.test.client import Client
 from testsupport.woometestcase import WoomeTestCase
 from testsupport.contextmanagers import URLOverride
@@ -51,14 +51,14 @@ class SigasyncQueue(unittest.TestCase):
         self.assertEquals(int(response3.content), test_obj_1_id)
 
 
-class mock_get_spoolqueue(object):
+class MockSpoolQueue(object):
     def __call__(self, spooler):
-        class MockSpoolQueue(object):
+        class _MockSpoolQueue(object):
             def submit_datum(self, data):
                 self.data = parse_qs(data)
             def process(self):
                 pass
-        sq = MockSpoolQueue()
+        sq = _MockSpoolQueue()
         sq.spooler = spooler
         self.spoolqueue = sq
         return sq
@@ -86,7 +86,7 @@ class SigasyncHttp(WoomeTestCase):
         person = self.reg_and_get_person('ht')
         from sigasync import views
         oldview = views.get_spoolqueue
-        spoolqueue = mock_get_spoolqueue()
+        spoolqueue = MockSpoolQueue()
         views.get_spoolqueue = spoolqueue
         try:
             sigasync.http.send(instance=person, sender=Person,
@@ -97,8 +97,24 @@ class SigasyncHttp(WoomeTestCase):
             assert spoolqueue.spoolqueue.data['func_module'] == ['emailapp.signals']
             assert spoolqueue.spoolqueue.data['sender'] == ['webapp__Person']
             assert spoolqueue.spoolqueue.data['instance'] == [str(person.id)]
+            assert spoolqueue.spoolqueue.data['created'] == ['1']
         finally:
             views.get_spoolqueue = oldview
-                    
-
+    
+    
+    def test_list_submission_in_kwargs(self):
+        person = Person.not_banned.latest('id')
+        from sigasync import views
+        oldview = views.get_spoolqueue
+        spoolqueue = MockSpoolQueue()
+        views.get_spoolqueue = spoolqueue
+        
+        try:
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.contacts_siteinvites_handler',
+                created=True, contacts_id=[1,2,3,4])
+            expected_contacts_id = simplejson.loads('{"contacts_id": ["1", "2", "3", "4"]}')['contacts_id']
+            assert simplejson.loads(spoolqueue.spoolqueue.data['kwargs'][0])['contacts_id'] == expected_contacts_id
+        finally:
+            views.get_spoolqueue = oldview
 # End

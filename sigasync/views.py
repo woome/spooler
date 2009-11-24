@@ -52,8 +52,16 @@ def spooler_http_gateway(request, spooler):
             'True': "1",
             'False': "0"
         }.get(created, "0"),
-        "kwargs": simplejson.dumps(dict((k, kwargs.get(k)) for k in kwargs)),
     }
+    cleaned_kwargs = {}
+    
+    for k in kwargs:
+        cleaned_kwargs[k] = kwargs.getlist(k) if len(kwargs.getlist(k)) > 1 else kwargs.get(k)
+    
+    data.update({
+        'kwargs': simplejson.dumps(cleaned_kwargs)
+    })
+    
     spoolqueue = get_spoolqueue(spooler)
     spoolqueue.submit_datum(urlencode(data))
     if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
