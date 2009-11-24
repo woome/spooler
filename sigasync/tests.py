@@ -11,6 +11,7 @@ from testsupport.contextmanagers import URLOverride
 from webapp.models import Person
 
 import sigasync.http
+from sigasync.dispatcher import async_connect
 
 class SigasyncQueue(unittest.TestCase):
     """Basic tests for the SigAsync queue
@@ -117,4 +118,39 @@ class SigasyncHttp(WoomeTestCase):
             assert simplejson.loads(spoolqueue.spoolqueue.data['kwargs'][0])['contacts_id'] == expected_contacts_id
         finally:
             views.get_spoolqueue = oldview
+
+    def test_dispatcher_sends_via_http(self):
+        from django.dispatch import dispatcher
+        from django.db.models import signals
+        from sigasync import sigasync_handler
+        _OLD_HANDLER = sigasync_handler.HANDLE_VIA_HTTP
+        sigasync_handler.HANDLE_VIA_HTTP = ['test']
+        try:
+            import pdb
+            pdb.set_trace()
+            async_connect(http_test_handler, spooler='test', signal=test_signal, sender=Person)
+            data = {}
+            def testview(request, spooler):
+                data.update({
+                    'spooler': spooler,
+                    'data': request.POST.copy(),
+                })
+                from django.http import HttpResponse
+                return HttpResponse('OK')
+            person = self.reg_and_get_person('ht')
+            with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+                dispatcher.send(instance=person, sender=Person,
+                    signal=test_signal)
+                assert data['spooler'] == 'default'
+                assert data['data']['instance'] == str(person.id)
+        finally:
+            sigasync_handler.HANDLE_VIA_HTTP = _OLD_HANDLER
+
+
+test_signal = object()
+
+def http_test_handler(sender, instance, **kwargs):
+    raise Exception('I SHOULD NOT BE CALLED')
+
+
 # End
