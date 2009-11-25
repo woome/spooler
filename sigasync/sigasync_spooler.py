@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+from datetime import datetime, timedelta
 try:
     import simplejson
 except ImportError, e:
@@ -8,8 +10,7 @@ from django.conf import settings
 from django.db import models
 from django.db import transaction
 from django.dispatch.dispatcher import _Anonymous
-from spooler import Spool
-from spooler import SpoolExists
+from spooler import Spool, SpoolContainer, SpoolManager
 from spooler import FailError
 import logging
 
@@ -20,26 +21,69 @@ def _get_queue_name(name):
     elif 'default' in map:
         return map['default']
     else:
-        return settings.DEFAULT_SPOOLER_QUEUE_NAME 
+        return settings.DEFAULT_SPOOLER_QUEUE_NAME
 
 def get_spoolqueue(name):
     qname = _get_queue_name(name)
     return SigAsyncSpool(qname, directory=settings.SPOOLER_DIRECTORY)
 
 
-class SigAsyncSpool(Spool):
-    def __init__(self, name, directory="/tmp", in_spool=None):
-        super(SigAsyncSpool, self).__init__(name, directory, in_spool)
-        self._failed = os.path.join(self._base, "failed")
-        self.close_transaction_after_execute = False
-        if not os.path.exists(self._failed):
-            os.makedirs(self._failed)
+class SigAsyncManager(SpoolManager):
+    def __init__(self, limit=100):
+        super(SigAsyncManager, self).__init__()
+        self._processed_count = 0
+        self._failed_count = 0
+        self._processed_limit = limit
+        self._last_reported = datetime.now()
+        self._report_interval = timedelta(minutes=5)
 
-    def _move_to_failed(self, entry):
-        os.rename(entry, os.path.join(self._failed, os.path.basename(entry)))
+    def processed_entry(self, spool, entry):
+        self._processed_count += 1
+        self._report(spool)
+
+    def failed_entry(self, spool, entry):
+        self._failed_count += 1
+        self._report(spool)
+
+    def _report(self, spool):
+        if datetime.now() - self._last_reported >= self._report_interval:
+            logger = logging.getLogger("sigasync.sigasync_spooler.SigAsyncManager")
+            logger.info("[queue:%s pid:%s] processed: %s  failed: %s" %
+                           (spool._name, os.getpid(),
+                            self._processed_count, self._failed_count))
+
+    def finished_processing(self, spool):
+        if self._processed_count >= self._processed_limit:
+            logging.getLogger("sigasync.sigasync_spooler.SigAsyncManager").info(
+                    "Stopping spooler after %s jobs" % self._processed_count)
+            self.stop(spool)
+
+
+class SigAsyncContainer(SpoolContainer):
+    def __init__(self, manager=SigAsyncManager, directory=None):
+        super(SigAsyncContainer, self).__init__(manager, directory)
+
+    def create_spool(self, queue, queue_settings):
+        spool = super(SigAsyncContainer, self).create_spool(
+                    queue, queue_settings, spool_class=SigAsyncSpool)
+        return spool
+
+
+class SigAsyncSpool(Spool):
+    def __init__(self, name, manager=None, **kwargs):
+        if manager is None:
+            manager = SigAsyncManager()
+
+        super(SigAsyncSpool, self).__init__(name, manager=manager, **kwargs)
+        self.close_transaction_after_execute = False
+        try:
+            if settings.DISABLE_SIGASYNC_SPOOL:
+                self._processing = self._processing_base
+        except AttributeError:
+            pass
 
     def execute(self, processing_entry):
-        logger = logging.getLogger("sigasync_spooler.execute")
+        logger = logging.getLogger("sigasync.sigasync_spooler.execute")
         try:
             fd = open(processing_entry)
             raw_data = fd.read()
@@ -67,9 +111,10 @@ class SigAsyncSpool(Spool):
                 try:
                     instance = model.objects.get(id=int(data["instance"]))
                 except model.DoesNotExist:
-                    raise FailError("%s with id %s not found" % (model, data['instance']))
+                    raise FailError("%s with id %s not found" %
+                                       (model, data['instance']))
 
-            created = { 
+            created = {
                 "1": True,
                 "0": False
                 }.get(data["created"], "0")
@@ -77,7 +122,7 @@ class SigAsyncSpool(Spool):
             data["instance"] = instance
             data["created"] = created
             if 'kwargs' in data:
-                kw = simplejson.loads(data['kwargs']) 
+                kw = simplejson.loads(data['kwargs'])
                 if isinstance(kw, dict):
                     for key,val in kw.iteritems():
                         data[key.encode('ascii') if isinstance(key, unicode) else key] = val
@@ -87,14 +132,13 @@ class SigAsyncSpool(Spool):
             # Call the real handler with the arguments now looking like they did before
             function_object["func_obj"](**data)
             taken = time.time() - start
-            logger.info('time taken: %s %s.%s %s %s' % (taken, func_module, func_name, getattr(model, '__name__', None), getattr(instance, 'id', None)))
-        except FailError, e:
-            logger.warning("failed because %s" % str(e))
-            self._move_to_failed(processing_entry)
-            raise
+            logger.info('time taken: %s %s.%s %s %s' %
+                           (taken, func_module, func_name,
+                            getattr(model, '__name__', None),
+                            getattr(instance, 'id', None)))
         finally:
-            ## FIXME - not sure I need to do this either ...
-            ## will process better handle any problem here?
+            # Don't catch anything; the process method will handle errors.
+            # Just make sure the file is closed.
             if fd:
                 try:
                     fd.close()

@@ -3,13 +3,25 @@
 """Spooler stuff
 """
 
-import tempfile
+from __future__ import with_statement
 import os
-import os.path
-import commands
 import sys
+import tempfile
+import signal
+import atexit
+import glob
 import logging
-import pdb
+from os.path import join as pathjoin
+from os.path import exists as pathexists
+from os.path import basename, dirname
+from time import sleep
+from datetime import datetime, timedelta
+from multiprocessing import Process
+
+SLEEP_TIME = 0.1  # seconds
+
+# How frequently to check the load and adjust spool processes
+ADJUST_INTERVAL = timedelta(seconds=60)
 
 class SpoolExists(Exception):
     pass
@@ -20,6 +32,259 @@ class SpoolDoesNotExist(Exception):
 class FailError(Exception):
     """fail the entry"""
     pass
+
+class SpoolManager(object):
+    """Provide hooks for a Spool."""
+
+    def __init__(self):
+        self.spool = None
+        self._should_stop = False
+
+    def stop(self, spool):
+        self._should_stop = True
+
+    # Hook methods, to be called by a Spool
+    # All hook methods take the calling Spool as the first non-self argument
+
+    def created_spool(self, spool, incoming, outgoing, failed):
+        """Notify that the spool has been created."""
+        pass
+
+    def started_processing(self, spool, incoming):
+        """Notify that processing on a list of entries has begun."""
+        pass
+
+    def created_processing(self, spool, processing):
+        """Notify that the processing directory has been created."""
+        logger = logging.getLogger("sigasync.spooler.SpoolManager")
+        logger.info("Created processing dir %s" % processing, extra={'pid': os.getpid()})
+        pass
+
+    def processed_entry(self, spool, entry):
+        """Notify that an entry has been successfully processed."""
+        pass
+
+    def failed_entry(self, spool, entry):
+        """Notify that an entry has failed to process."""
+        pass
+
+    def finished_processing(self, spool):
+        """Notify that the spool has finished processing a list."""
+        pass
+
+    def should_stop(self, spool):
+        return self._should_stop
+
+
+class SpoolContainer(object):
+    """Spooler container
+    Contains the spools, manages processes, etc."""
+    
+    def __init__(self, manager=SpoolManager, directory=None):
+        self._children = set()
+        self._base = directory
+        self._should_exit = False
+        self._last_adjusted = datetime.now()
+
+        if isinstance(manager, type):
+            self.manager = manager()
+        else:
+            self.manager = manager
+
+        self._read_config()
+
+    # TODO: Factor out Django-specific config
+    def _read_config(self):
+        """Pull data from config into local data structures."""
+        from django.conf import settings
+        # Allow base directory to be overridden (useful for testing)
+        if self._base is None:
+            self._base = settings.SPOOLER_DIRECTORY
+
+        # The keys are logical queues, the values are real queues
+        queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
+        qdict = {}
+        #import ipdb; ipdb.set_trace()
+        defaults = settings.SPOOLER_DEFAULTS
+        for queue in queues:
+            queue_dir = pathjoin(self._base, queue)
+            try:
+                qconf = defaults.copy()
+                qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper()))
+            except AttributeError:
+                qconf = defaults
+
+            in_, out, retry15, retry60, fail = [pathjoin(queue_dir, d) for d in
+                                 ['in', 'out', 'retry15', 'retry60', 'failed']]
+            qdict[queue] = {'incoming': in_,
+                            'outgoing': out,
+                            'failure': retry15,
+                            'minprocs': qconf['minprocs'],
+                            'maxprocs': qconf['maxprocs'],
+                            'nprocs': qconf['minprocs'],
+                            'procs': []}
+            qdict[queue+'_retry15'] = {'incoming': retry15,
+                                       'outgoing': out,
+                                       'failure': retry60,
+                                       'minprocs': 1,
+                                       'maxprocs': 2,
+                                       'nprocs': 1,
+                                       'procs': [],
+                                       'filter': self._delay_filter(15)}
+            qdict[queue+'_retry60'] = {'incoming': retry60,
+                                       'outgoing': out,
+                                       'failure': fail,
+                                       'minprocs': 1,
+                                       'maxprocs': 2,
+                                       'nprocs': 1,
+                                       'procs': [],
+                                       'filter': self._delay_filter(60)}
+        self._queues = qdict
+
+    def _start_spools(self):
+        for queue, conf in self._queues.iteritems():
+            for n in range(conf['nprocs']):
+                self._start_spool(queue)
+
+    def _start_spool(self, queue):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
+        process = Process(target=self.spool_process,
+                          args=(queue, self._queues[queue]))
+        process.daemon = True
+        process.start()
+        self._queues[queue]['procs'].append(process)
+        self._children.add(process)
+        logger.info("Started spool process %s for %s queue."
+                     % (process.pid, queue))
+        return process
+
+    def _adjust_spool(self, queue):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer._adjust_spool")
+        qd = self._queues[queue]
+        try:
+            entries = len(os.listdir(qd['incoming']))
+        except OSError, e:
+            logger.error("Error opening %s: %s" % (qd['incoming'], e))
+            return
+        if entries > 100 and qd['nprocs'] < qd['maxprocs']:
+            logger.info("Spawning new process for %s" % queue)
+            qd['nprocs'] += 1
+        elif entries < 50 and qd['nprocs'] > qd['minprocs']:
+            logger.info("Removing process for %s" % queue)
+            qd['nprocs'] -= 1
+
+    def _write_pid(self):
+        with open(pathjoin(self._base, '%s.pid' % os.getpid()), 'w') as f:
+            f.write("%s" % os.getpid())
+
+    def _remove_pid(self):
+        try:
+            os.unlink(pathjoin(self._base, '%s.pid' % os.getpid()))
+        except Exception, e:
+            logging.getLogger("Spool").warning(
+                    "Failed to remove pidfile %s.pid" % os.getpid())
+
+    def run(self):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer.run")
+        self._start_spools()
+        self._write_pid()
+        atexit.register(self._remove_pid)
+        signal.signal(signal.SIGINT, self.exit)
+
+        while not self._should_exit:
+            adjusted = False
+            # check status of spools
+            for queue, dict_ in self._queues.iteritems():
+                procs = dict_['procs']
+                # Clean out dead processes in this queue
+                for p in procs[:]:
+                    if not p.is_alive():
+                        if p.exitcode > 0:
+                            logger.warning("Spool %s-%s exited with code %s"
+                                    % (queue, p.pid, p.exitcode))
+                        elif p.exitcode < 0:
+                            logger.warning("Spool %s-%s was killed by signal %s"
+                                    % (queue, p.pid, -1 * p.exitcode))
+                        procs.remove(p)
+                        self._children.remove(p)
+                # Adjust the target number of processes based on load
+                if datetime.now() - self._last_adjusted > ADJUST_INTERVAL:
+                    self._adjust_spool(queue)
+                    adjust = True
+                # Create any new processes needed
+                if not self._should_exit:
+                    for i in range(dict_['nprocs'] - len(procs)):
+                        self._start_spool(queue)
+            if adjusted:
+                self._last_adjusted = datetime.now()
+            # Touch the pid file
+            self._write_pid()
+            sleep(SLEEP_TIME)
+
+        # Clean up
+        logger.info("Shutting down child processes...")
+        for p in self._children:
+            try:
+                os.kill(p.pid, signal.SIGINT)
+            except OSError:
+                # Already died
+                pass
+        for p in self._children:
+            p.join()
+
+    def exit(self, sig, frame):
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
+        logger.info("Shutting down spooler...")
+        self._should_exit = True
+
+    def create_spool(self, queue, queue_settings, spool_class=None):
+        if spool_class is None:
+            spool_class = Spool
+        spool = spool_class(queue,
+                            directory=self._base,
+                            in_spool=queue_settings['incoming'],
+                            out_spool=queue_settings['outgoing'],
+                            failed_spool=queue_settings['failure'],
+                            entry_filter=queue_settings.get('filter'))
+        return spool
+
+    def spool_process(self, queue, queue_settings):
+        """Run a spool in a processing loop until it should die.
+
+        A spool process should die after it has processed a certain number of
+        jobs. We check it after each call to process(). If the spool caches
+        its incoming jobs list, this means it will finish processing that list
+        even if it exceeds the maximum number of jobs. This lets us put some
+        bound on ordering.
+
+        """
+        spool = self.create_spool(queue, queue_settings)
+
+        def _exit(sig, frame):
+            logger = logging.getLogger("sigasync.spooler.SpoolContainer")
+            logger.info("Shutting down spooler %s-%s" % (queue, os.getpid()))
+            spool.manager.stop(spool)
+        signal.signal(signal.SIGINT, _exit)
+
+        while not spool.manager._should_stop:
+            spool.process()
+            sleep(SLEEP_TIME)
+
+    # Utility functions
+
+    def _delay_filter(self, minutes):
+        """Return a filter removing jobs less than _minutes_ old."""
+        delta = timedelta(minutes=minutes)
+
+        def _filter(entry):
+            try:
+                st = os.lstat(entry)
+            except Exception:
+                return False
+            diff = datetime.now() - datetime.fromtimestamp(st.st_ctime)
+            return diff > delta
+
+        return _filter
 
 
 class Spool(object):
@@ -38,334 +303,388 @@ class Spool(object):
     You submit jobs to the spool as filenames. They become symlinks to
     your filename in the IN directory.
 
-    When you call process() the entrys in the IN directory are
-    processed by moving them to the processing directory and then running execute.
+    When you call process() the entries in the IN directory are processed by
+    moving them to the processing directory and then running execute.
 
-    If execute completes without exception the files are moved to the outgoing spool.
+    If execute completes without exception the files are moved to the outgoing
+    spool.
 
-    If execute fails then the files are moved back to the incomming spool.
+    If execute fails then the files are moved to the failed spool.
 
     == Submitting jobs to the spooler ==
 
     You can either use the submit function to submit jobs to the
-    spooler or you can mount the incomming spool on a directory and
+    spooler or you can mount the incoming spool on a directory and
     have the filesystem cause the submission.
 
     In the former case it is not possible to preserve the filename
     using the spooler alone.
 
     In the latter case the spooler requires that the filenames in the
-    incomming have unique basenames.
+    incoming have unique basenames.
 
-    Directorys can be submitted as well as files.
     """
 
-    def create(name, directory="/tmp"):
-        base = os.path.join(directory, name)
-        if os.path.exists(base):
-            raise SpoolExists(base)
-        else:
-            os.makedirs(base)
+    def __init__(self, name,
+                 manager=None,
+                 directory="/tmp",
+                 in_spool=None,
+                 out_spool=None,
+                 failed_spool=None,
+                 shard_in=False,
+                 shard_out=False,
+                 entry_filter=None):
+        """Initialize a spool, creating any necessary directories.
 
-    create = staticmethod(create)
+        WARNING: All directories used by the spooler must exist on the same
+        filesystem. The default directories will normally satisfy this
+        constraint, but if you specify any of in_spool, out_spool, or
+        failed_spool manually you MUST ensure that they and the base directory
+        of the spool are on the same filesystem.
 
-    def __init__(self, name, directory="/tmp", in_spool=None):
-        """Create a reference to a spooler.
-
-        If the in_spool is specified it is used as the input spooler.
-        WARNING!!! if you specify this you MUST ensure that the input
-        spooler is ON THE SAME FILESYSTEM as the main spooler working files.
-        In other words that:
-
-           filesystem(directory) == filesystem(in_spool)
-
-        If the spooler detects that the in_spool does not exist then
-        the default is used.
+        It is valid for all, some, or none of the directories to exist before
+        __init__ is called.
 
         Arguments:
-        name is the name of the spooler, if it exists it will be reused.
+        name - The name of the spool. Multiple spools can have the same name
+               and directory, and they will share the queue.
+        manager - A class of hooks that are called throughout processing. See
+                  the SpoolManager class.
 
         Keyword arguments:
-        directory - the directory to make the spooler working directorys on.
-        in_spool  - the directory to use as the in_spool, if None then a default is used.
+        directory - The directory containing all spool files and directories.
+        in_spool  - The directory used for incoming entries.
+        out_spool - The directory finished entries are moved to.
+        failed_spool - The directory failed entries are moved to.
+        shard_out - currently unused
+        entry_filter - A function returning boolean that is used as a filter
+                       on entries
+
         """
-
-        # We shouldn't actually create a new spool every time
-        # we want a fixed spool, the processing dir is the bit that changes
-        #self._base = tempfile.mkdtemp(prefix=directory, dir=name)
-        self._base = os.path.join(directory, name)
-        if not os.path.exists(self._base):
-            # raise SpoolDoesNotExist(self._base)
-            # not sure why the above does this, think it's a legacy thing
-            # from having random spool names
-            os.makedirs(self._base)
-
-        if in_spool and os.path.exists(in_spool):
-            self._in = in_spool
+        if manager is None:
+            self.manager = SpoolManager()
         else:
-            self._in = os.path.join(self._base, "in")
-            if not os.path.exists(self._in):
-                os.makedirs(self._in)
+            self.manager = manager
 
-        self._out = os.path.join(self._base, "out")
-        if not os.path.exists(self._out):
-            os.makedirs(self._out)
+        self._name = name
+        self._base = pathjoin(directory, name)
+        self._in = in_spool or pathjoin(self._base, "in")
+        self._out = out_spool or pathjoin(self._base, "out")
+        self._failed = failed_spool or pathjoin(self._base, "failed")
 
-        self._processing_base = os.path.join(self._base, 'processing')
-        if not os.path.isdir(self._processing_base):
-            os.makedirs(self._processing_base)
+        self._processing_base = pathjoin(self._base, "processing")
+        self._entry_filter = entry_filter
+        self._shard_in = shard_in
+        self._shard_out = shard_out
+
+        # Ensure the directories are there
+        for p in [self._in,
+                  self._out,
+                  self._processing_base,
+                  self._failed]:
+            if not pathexists(p):
+                try:
+                    os.makedirs(p)
+                except OSError, e:
+                    if pathexists(p):
+                        # Another process must have created the directory
+                        pass
+                    else:
+                        raise e
+
+        self.manager.created_spool(self, self._in, self._out, self._failed)
 
     class _LazyProcessingDescriptor(object):
-        """this is here as a little hack to prevent the spooler instance from creating
-        a processing directory automatically at instantiation.
+        """Prevent the spooler instance from pre-creating processing dir.
 
-        need a special class because i want a non-data descriptor, unlike property()
-
+        Need a special class because I want a non-data descriptor,
+        unlike property()
         """
         def __get__(self, obj, type=None):
             obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
+            atexit.register(obj._remove_processing_dir)
+            obj.manager.created_processing(obj, obj._processing)
             return obj._processing
-    _processing = _LazyProcessingDescriptor()
 
+    _processing = _LazyProcessingDescriptor()
 
     # You must implement this.
     def execute(self, processing_entry):
         """the null executer just passes"""
         pass
 
+    # Informational methods
     def get_out_spool(self):
         """Returns the full path of the output spool.
 
         This is so you can use this to mount another spooler's
-        incomming spool on this spooler's output spool.
+        incoming spool on this spooler's output spool.
         """
         return self._out
     
     # Helper and instance methods
 
-    def destroy(self):
-        commands.getstatus("rm -rf %s" % self._base)
+    def _remove_processing_dir(self):
+        try:
+            os.rmdir(self._processing)
+        except OSError, e:
+            logging.getLogger("Spool._remove_processing_dir").warning(
+                    "Failed to remove dir %s: %s" % (self._processing, e))
 
-    def _move_to_incomming(self, entry):
-        os.rename(entry, os.path.join(self._in, os.path.basename(entry)))
+    def _move_to(self, entry, dir):
+        """Move an entry to the target directory.
+
+        If the file no longer exists this will raise an OSError. This is
+        normal when moving files out of incoming if multiple processes are
+        operating on the same queue.
+
+        Returns the new path of the entry on success.
+
+        """
+        target = pathjoin(dir, basename(entry))
+        os.rename(entry, target)
+        return target
+
+    def _move_to_incoming(self, entry):
+        return self._move_to(entry, self._in)
 
     def _move_to_processing(self, entry):
-        # This can fail because the incoming has gone away
-        # (maybe it was processed by another job)
-        os.rename(entry, os.path.join(self._processing, os.path.basename(entry)))
-        return os.path.join(self._processing, os.path.basename(entry))
+        return self._move_to(entry, self._processing)
+
+    def _move_to_failed(self, entry):
+        return self._move_to(entry, self._failed)
         
     def _move_to_outgoing(self, entry):
-        os.rename(entry, os.path.join(self._out, os.path.basename(entry)))
+        return self._move_to(entry, self._out)
+
+    def _make_datum_fname(self):
+        """Return a filename (based in _in) suitable for the spooler.
+
+        This is called by submit. Please override it if you want specific
+        filenames in your spooler.
+
+        The default implementation uses the datetime, the current pid, and a
+        temp string to avoid name clashes and provide ordering by submission
+        time.
+
+        """
+        t = datetime.now()
+        pre = "%s%06d_%s_" % (t.strftime("%Y%m%d%H%M%S"),
+                              t.microsecond,
+                              os.getpid())
+        return tempfile.mktemp(prefix=pre, dir=self._in)
 
     def submit_datum(self, datum):
-        """Submit the specified datum to the spooler without having to worry about filenames.
+        """Submit the datum to the spooler without having to worry about filenames.
 
-        This just does the creation of the file on the user's behalf.
+        This just does the creation of the file on the user's behalf.  The
+        datum is written into a temporary file and the file is submitted.
 
-        The datum is simply written into the created file.
-
-        Warning
-        This method is not atomic and so is slightly dangerous.
         """
-        
-        ### FIXME:: possibly this should create a file somewhere else and then call submit on it.
-        target_name = os.path.join(self._in, tempfile.mktemp(dir=self._in))
-        fd = None
+        (tmpfd, tmpfname) = tempfile.mkstemp()
         try:
-            fd = open(target_name, "w")
-            fd.write(datum)
+            os.write(tmpfd, datum)
         finally:
-            if fd:
-                try:
-                    fd.close()
-                except Exception, e:
-                    print >>sys.stderr, "couldn't close the file on submit_datum"
+            os.close(tmpfd)
+
+        self.submit(tmpfname, mv=True)
 
     def submit(self, filename, mv=False):
-        """Push the file into the spooler for being operated on.
+        """Push the file into the spooler's queue.
 
         If 'mv' is set True then filename is removed from it's src
         location; if 'mv' is False then it is simply symlinked.
-        """
 
-        target_name = os.path.join(self._in, tempfile.mktemp(dir=self._in))
+        """
+        target_name = self._make_datum_fname()
         if mv:
             os.rename(filename, target_name)
         else:
             os.symlink(filename, target_name)
 
-    def process(self, 
-                function=None,
-                entryfilter=lambda entry: entry):
+    def _incoming(self):
+        """Yield an iterator over incoming file entries."""
+        try:
+            entries = os.listdir(self._in)
+        except OSError, e:
+            if e.errno == 22:
+                # HFS+ sometimes returns errno 22 EINVAL from readdir
+                # after renaming files, so just retry on the next loop
+                return
+            else:
+                raise e
+        entries = [pathjoin(self._in, e) for e in entries]
+        entries = filter(self._entry_filter, entries)
+        for entry in entries:
+            yield entry
+
+    def process(self, function=None):
         """Process the spool.
 
-        Entrys to process are captured from the inspool and tested
-        with the 'entryfilter'.
+        Entries to process are captured from the inspool and tested with the
+        entry_filter (supplied as a keyword argument to __init__) Only entries
+        present when this method is called will be processed.
 
-        If they pass the 'entryfilter' they are moved one by one to
-        the processing spool and the 'function' is called on each.
+        If they pass entry_filter they are moved one by one to the processing
+        spool and the 'function' is called on each.
 
-        On success entrys are moved to the outgoing spool.
+        On success entries are moved to the outgoing spool.
 
-        On failure entrys are moved back to incomming.
+        On failure entries are moved to the failure spool.
 
-        Keyword arguments:
+        Keyword arguments: function - function to call on the entry, by default
+        it is self.execute
 
-        function    - function to call on the entry, by default it is self.execute
-        entryfilter - function to test each entry, by default lambda x: x
         """
-        
-        logger = logging.getLogger("Spool.process")
-        if function == None:
+        logger = logging.getLogger("sigasync.spooler.Spool.process")
+        if function is None:
             function = self.execute
 
-        for entry in filter(entryfilter,
-                            [os.path.join(self._in, direntry) for direntry in os.listdir(self._in)]):
+        self.manager.started_processing(self, self._in)
+
+        for entry in self._incoming():
+            if self.manager.should_stop(self):
+                return
             try:
                 processing_entry = self._move_to_processing(entry)
-            except Exception, e:
-                # Maybe the incoming entry was moved away by another job?
-                print >>sys.stderr, "processing %s failed because it was gone" % entry
+            except OSError, e:
+                if e.errno == 2:
+                    # '[Errno 2] No such file or directory'
+                    # The file was moved, probably by another spool process
+                    pass
+                else:
+                    raise e
             else:
-                # The entry was moved to our processing dir so try and execute the job
                 try:
                     function(processing_entry)
-                except FailError, e:
-                    pass
                 except Exception, e:
-                    logger.error("failed because %s" % str(e))
-                    print >>sys.stderr, "encountered error: %s whilst processing %s" % (e, function)
-                    self._move_to_incomming(processing_entry)
+                    failed_entry = self._move_to_failed(processing_entry)
+                    self.manager.failed_entry(self, failed_entry)
+                    logger.exception("%s failed with error: %s" % (failed_entry, e))
                 else:
-                    self._move_to_outgoing(processing_entry)
+                    processed_entry = self._move_to_outgoing(processing_entry)
+                    self.manager.processed_entry(self, processed_entry)
+                    logger.debug("processed entry %s" % processed_entry)
+        
+        self.manager.finished_processing(self)
 
 
+# Utility functions for running from the command line and as a daemon
 
-def make_cp_fn(destination):
-    """Make a process function that can be used to copy files to destination.
-
-    For example:
-
-    s=Spool("copier")
-    s.submit(filename1)
-    s.submit(filename2)
-    s.submit(filename3)
-    s.process(make_cp_fn("/home/nferrier/dest"))
-    """
-
-    def fn(entry):
-        src_fd = open(entry)
-        dest_fd = open(os.path.join(destination, os.path.basename(entry)), "w")
-        data_buf = src_fd.read(5000)
-        while data_buf != "":
-            dest_fd.write(data_buf)
-            data_buf = src_fd.read(5000)
-        src_fd.close()
-        dest_fd.close()
-    return fn
-
-
-import unittest
-
-class SpoolerTest(unittest.TestCase):
+def daemonize(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
+    """Robustly turn into a UNIX daemon, running in our_home_dir.
     
-    def test_standard_submit(self):
-        """This tests the submit function of the spooler.
+    Borrowed from django.utils.daemonize.
+    
+    """
+    # First fork
+    try:
+        if os.fork() > 0:
+            os._exit(0)     # kill off parent
+    except OSError, e:
+        sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
+        sys.exit(1)
+    os.setsid()
+    os.chdir(our_home_dir)
+    os.umask(022)
 
-        The test make a file and then submits it to a spooler. The spooler
-        processes the file with the default (no-op) processing.
-        """
+    # Second fork
+    try:
+        if os.fork() > 0:
+            os._exit(0)
+    except OSError, e:
+        sys.stderr.write("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror))
+        os._exit(1)
 
-        try:
-            Spool.create("test1")
-        except SpoolExists:
+    si = open('/dev/null', 'r')
+    so = open(out_log, 'a+', 0)
+    se = open(err_log, 'a+', 0)
+    os.dup2(si.fileno(), sys.stdin.fileno())
+    os.dup2(so.fileno(), sys.stdout.fileno())
+    os.dup2(se.fileno(), sys.stderr.fileno())
+    # Set custom file descriptors so that they get proper buffering.
+    sys.stdout, sys.stderr = so, se
+
+def setup_django():
+    woome_dir = os.path.abspath(os.path.dirname(__file__) + "/../../woome")
+    sys.path.insert(0, woome_dir)
+    import config.importname
+    local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
+    try:
+        django_dir = local_config.DJANGO_PATH_DIR
+    except AttributeError:
+        django_dir = config.discover_django_location()
+    if django_dir:
+        sys.path.insert(1, django_dir)
+        from django.core.management import setup_environ
+        import settings
+        setup_environ(settings)
+    else:
+        raise ImportError("Unable to find Django")
+
+    import global_signals_connector
+
+def _import_object(name):
+    parts = name.split('.')
+    mod_name = '.'.join(parts[:-1])
+    obj_name = parts[-1]
+    mod = __import__(mod_name, globals(), locals(), [obj_name])
+    try:
+        obj = getattr(mod, obj_name)
+    except AttributeError:
+        raise ImportError("cannot import name %s" % obj_name)
+    return obj
+
+def main():
+    import getopt
+    opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
+    opts = dict(opts)
+    if '--nodjango' not in opts:
+        setup_django()
+    if '-m' in opts:
+        container = _import_object(opts['-m'])()
+    else:
+        container = SpoolContainer()
+    err_log = opts.get('-e', '/dev/null')
+    out_log = opts.get('-o', '/dev/null')
+
+    if 'start' in args[0:1]:
+        if glob.glob("%s/*.pid" % container._base):
+            print "Failed to start - pid files exist"
+            sys.exit(1)
+
+        if '-D' not in opts:
+            daemonize(out_log=out_log, err_log=err_log)
+        container.run()
+
+    elif 'stop' in args[0:1]:
+        for f in glob.glob("%s/*.pid" % container._base):
+            with open(pathjoin(container._base, f)) as fh:
+                pid = fh.read()
             try:
-                os.makedirs("dest")
-            except:
-                pass
+                os.kill(int(pid), signal.SIGINT)
+                # Succesfull kill so remove the pid file
+                os.remove(pathjoin(container._base, f))
+                print "Killing process %s." % pid
+            except OSError, e:
+                print "Failed to kill process %s: %s" % (pid, e)
+                sys.exit(1)
+    else:
+        print >> sys.stdout, """usage: %s [options] start
+        options:
+        -D:         do not daemonize
+        -e:         error log file
+        -o:         stdout log file
+        -s <num>:   number of seconds for each sleep loop. (ignored)
+        -m:         python path of spool container to instantiate/factory method. 
+        --nodjango: do no load django environment
 
-        # Make a file to submit
-        submit_filename = "/tmp/aaaa_spooler_test_file"
-        try:
-            fd = open(submit_filename, "w")
-        except Exception, e:
-            assert False, "test1: the submit file %s could not be created?" % submit_filename
-        else:
-            print >>fd, "hello!"
-        finally:
-            fd.close()
+        example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
 
-        # Make a spool
-        s=Spool("test")
-        # Submit the pre-existing file to it
-        s.submit(os.path.join(os.getcwd(), submit_filename))
-        # Process with the defaults
-        s.process()
-        # Now assert it's gone to the output
-        dc = [os.path.join(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
-        try:
-            fd = open(dc[0])
-            content = fd.read()
-        except Exception:
-            assert False, "test1: the processed file didn't arrive"
-        else:
-            assert content == "hello!\n" ## we print it, so it has a newline on the end
-        finally:
-            commands.getstatus("rm -rf %s" % submit_filename)
-            fd.close()
+        """ % (sys.argv[0], sys.argv[0])
 
+if __name__ == '__main__':
+    main()
 
-    def test2():
-        """Test the mounted spooler
-        """
-
-
-        spool_name = "test2"
-        try:
-            Spool.create(spool_name)
-        except SpoolExists:
-            pass
-
-        # Make a directory to submit
-        spooler_in_dir = "/tmp/test2_spooler_in"
-        os.makedirs(spooler_in_dir)
-
-        # Create the pre-existing file which the spooler will process
-        submit_filename = os.path.join(spooler_in_dir, "aaaa_spooler_test_file")
-        try:
-            fd = open(submit_filename, "w")
-        except Exception, e:
-            assert False, "test1: the submit file %s could not be created?" % submit_filename
-        else:
-            print >>fd, "hello!"
-        finally:
-            fd.close()
-
-        # Make a spool
-        s=Spool(spool_name, in_spool=spooler_in_dir)
-        # Process with the defaults
-        s.process()
-        # Now assert it's gone to the output
-        dc = [os.path.join(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
-        try:
-            fd = open(dc[0])
-            content = fd.read()
-        except Exception:
-            assert False, "test1: the processed file didn't arrive"
-        else:
-            assert content == "hello!\n" ## we print it, so it has a newline on the end
-        finally:
-            commands.getstatus("rm -rf %s" % spooler_in_dir)
-            fd.close()
-
-
-
-# Main program        
-#if __name__ == "__main__":
-#    if "test" in sys.argv:
-#        #test1()
-#        #test2()
-#        pass
 
 # End
