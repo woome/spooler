@@ -327,7 +327,10 @@ class MockSpoolQueue(object):
                 pass
         sq = _MockSpoolQueue()
         sq.spooler = spooler
-        self.spoolqueue = sq
+        if getattr(self, 'spoolqueue', None):
+            self.spoolqueue.append(sq)
+        else:
+            self.spoolqueue = [sq]
         return sq
 
 
@@ -359,12 +362,13 @@ class SigasyncHttp(WoomeTestCase):
             sigasync.http.send(instance=person, sender=Person,
                 handler='emailapp.signals.passwordreset_email_handler',
                 created=True)
-            assert spoolqueue.spoolqueue.spooler == 'emailhighpri'
-            assert spoolqueue.spoolqueue.data['func_name'] == ['passwordreset_email_handler']
-            assert spoolqueue.spoolqueue.data['func_module'] == ['emailapp.signals']
-            assert spoolqueue.spoolqueue.data['sender'] == ['webapp__Person']
-            assert spoolqueue.spoolqueue.data['instance'] == [str(person.id)]
-            assert spoolqueue.spoolqueue.data['created'] == ['1']
+            assert spoolqueue.spoolqueue[-1].spooler == 'emailhighpri'
+            assert spoolqueue.spoolqueue[-1].data['func_name'] == ['passwordreset_email_handler']
+            assert spoolqueue.spoolqueue[-1].data['func_module'] == ['emailapp.signals']
+            assert spoolqueue.spoolqueue[-1].data['sender'] == ['webapp__Person']
+            assert spoolqueue.spoolqueue[-1].data['instance'] == [str(person.id)]
+            assert spoolqueue.spoolqueue[-1].data['created'] == ['1']
+            assert len(spoolqueue.spoolqueue) == 1
         finally:
             views.get_spoolqueue = oldview
     
@@ -381,7 +385,7 @@ class SigasyncHttp(WoomeTestCase):
                 handler='emailapp.signals.contacts_siteinvites_handler',
                 created=True, contacts_id=[1,2,3,4])
             expected_contacts_id = simplejson.loads('{"contacts_id": ["1", "2", "3", "4"]}')['contacts_id']
-            assert simplejson.loads(spoolqueue.spoolqueue.data['kwargs'][0])['contacts_id'] == expected_contacts_id
+            assert simplejson.loads(spoolqueue.spoolqueue[-1].data['kwargs'][0])['contacts_id'] == expected_contacts_id
         finally:
             views.get_spoolqueue = oldview
 
