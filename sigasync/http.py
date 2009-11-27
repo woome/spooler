@@ -22,3 +22,15 @@ def send(instance, sender, handler, **kwargs):
     
     return webservice.post('/spooler/%s/' % spooler, data)
 
+def send_handler(spooler, handler, instance, sender, **kwargs):
+    data = {
+        'instance': instance.id,
+        'sender': '%s__%s' % (sender._meta.app_label, sender.__name__) if not isinstance(sender, _Anonymous) else '_Anonymous',
+        'handler': '%s.%s' % (handler.__module__, handler.__name__),
+    }
+
+    if kwargs:
+        data.update(kwargs)
+    
+    return webservice.post('/spooler/%s/' % spooler, data)
+

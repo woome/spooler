@@ -22,7 +22,9 @@ def sigasync_handler(func, spooler='default'):
         logger.debug("called")
 
     if spooler in HANDLE_VIA_HTTP:
-        return lambda instance, sender, *args, **kwargs: http.send(instance, sender, func, *args, **kwargs)
+        def httpsend(instance, sender, *args, **kwargs):
+            http.send_handler(spooler, func, instance, sender, *args, **kwargs)
+        return httpsend
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
         logger = logging.getLogger("sigasync.sigasync_handler.continuation")
