@@ -41,8 +41,9 @@ def sigasync_handler(func, spooler='default', timeout=None):
             "kwargs": kwargs_data,
             "create_time": time.time(),
             "spooler": spooler,
-            "timeout": timeout,
         }
+        if timeout:
+            data['timeout'] = timeout
 
         # Submit to the spooler
         spoolqueue = get_spoolqueue(spooler)
