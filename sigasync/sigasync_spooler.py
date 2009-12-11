@@ -13,6 +13,7 @@ from django.dispatch.dispatcher import _Anonymous
 from spooler import Spool, SpoolContainer, SpoolManager
 from spooler import FailError
 import logging
+from testsupport.contextmanagers import SettingsOverride
 
 def _get_queue_name(name):
     map = settings.SPOOLER_QUEUE_MAPPINGS
@@ -92,6 +93,20 @@ class SigAsyncSpool(Spool):
             import cgi
             pairs = cgi.parse_qsl(raw_data)
             data = dict(pairs)
+
+            create_time = data.pop('create_time', None)
+            spooler = data.pop('spooler')
+            timeout = data.pop('timeout', None)
+            if timeout:
+                if not create_time:
+                    create_time = os.path.ctime(processing_entry)
+                if float(create_time) + int(timeout) < time.time():
+                    logger.info('job %s returned unprocessed'
+                     ' because create time "%s" is older than'
+                     ' timeout "%s"' % (processing_entry,
+                     create_time, timeout))
+                    return
+
 
             # Get the func
             func_name = data["func_name"]

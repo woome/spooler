@@ -1,4 +1,5 @@
 """Send signals over an asynchronous delivery mechanism"""
+import time
 
 try:
     import simplejson
@@ -10,7 +11,7 @@ import logging
 from django.conf import settings
 from django.dispatch.dispatcher import _Anonymous
 
-def sigasync_handler(func, spooler='default'):
+def sigasync_handler(func, spooler='default', timeout=None):
     logger = logging.getLogger("sigasync.sigasync_handler")
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("called")
@@ -38,6 +39,9 @@ def sigasync_handler(func, spooler='default'):
                 False: "0"
                 }.get(created, "0"),
             "kwargs": kwargs_data,
+            "create_time": time.time(),
+            "spooler": spooler,
+            "timeout": timeout,
         }
 
         # Submit to the spooler
