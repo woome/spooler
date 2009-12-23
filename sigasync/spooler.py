@@ -270,6 +270,8 @@ class SpoolContainer(object):
             spool.process()
             sleep(SLEEP_TIME)
 
+        spool.cleanup()
+
     # Utility functions
 
     def _delay_filter(self, minutes):
@@ -401,8 +403,8 @@ class Spool(object):
         unlike property()
         """
         def __get__(self, obj, type=None):
-            obj._processing = tempfile.mkdtemp(dir=obj._processing_base)
-            atexit.register(obj._remove_processing_dir)
+            obj._processing = tempfile.mkdtemp(dir=obj._processing_base,
+                                               prefix="%d_" % os.getpid())
             obj.manager.created_processing(obj, obj._processing)
             return obj._processing
 
@@ -425,11 +427,14 @@ class Spool(object):
     # Helper and instance methods
 
     def _remove_processing_dir(self):
+        logger = logging.getLogger("sigasync.spooler.Spool._remove_processing_dir")
         try:
             os.rmdir(self._processing)
         except OSError, e:
-            logging.getLogger("Spool._remove_processing_dir").warning(
-                    "Failed to remove dir %s: %s" % (self._processing, e))
+            logger.warning("Failed to remove dir %s: %s" %
+                    (self._processing, e))
+        else:
+            logger.info("Removed processing dir %s" % self._processing)
 
     def _move_to(self, entry, dir):
         """Move an entry to the target directory.
@@ -567,6 +572,10 @@ class Spool(object):
                     logger.debug("processed entry %s" % processed_entry)
         
         self.manager.finished_processing(self)
+
+    def cleanup(self):
+        """Run any cleanup tasks."""
+        self._remove_processing_dir()
 
 
 # Utility functions for running from the command line and as a daemon
