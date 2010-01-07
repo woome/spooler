@@ -4,14 +4,18 @@
 from __future__ import with_statement
 from cgi import parse_qs
 import simplejson
+import mock
 import tempfile
 import unittest
 import pdb
 from django.test.client import Client
 from sigasync.spooler import *
 from sigasync.sigasync_spooler import SigAsyncContainer
+from sigasync.sigasync_spooler import SigAsyncSpool
+from sigasync.sigasync_handler import sigasync_handler
+from django.dispatch.dispatcher import _Anonymous
 from multiprocessing import Process
-from time import sleep
+from time import sleep, time
 from os.path import join as pathjoin
 import os
 import signal
@@ -102,8 +106,10 @@ class SpoolerTest(unittest.TestCase):
         s.submit(submit_filename)
         dc = [pathjoin(s._in, direntry) for direntry in os.listdir(s._in)]
         fd = None
+        filename = None
         try:
-            fd = open(dc[0])
+            filename = dc[0]
+            fd = open(filename)
             content = fd.read()
         except Exception:
             assert False, "test1: the incoming file didn't arrive"
@@ -119,10 +125,12 @@ class SpoolerTest(unittest.TestCase):
         s.process()
 
         # Now assert it's gone to the output
-        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
+        # dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
         fd = None
         try:
-            fd = open(dc[0])
+            filename = filename.replace('/in/', '/out/')
+            # read the last file.
+            fd = open(filename)
             content = fd.read()
         except Exception:
             assert False, "test1: the processed file didn't arrive"
@@ -409,17 +417,98 @@ class SigasyncHttp(WoomeTestCase):
             with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
                 dispatcher.send(instance=person, sender=Person,
                     signal=test_signal)
-                assert data['spooler'] == 'default'
+                assert data['spooler'] == 'test'
                 assert data['data']['instance'] == str(person.id)
         finally:
             sigasync_handler.HANDLE_VIA_HTTP = _OLD_HANDLER
 
 
 test_signal = object()
-
 def http_test_handler(sender, instance, **kwargs):
     raise Exception('I SHOULD NOT BE CALLED')
 
 
-# End
 
+mockhandler = mock.Mock()
+mockhandler.__module__ = __name__
+mockhandler.__name__ = 'mockhandler'
+
+def fakeopen(datum):
+    """Returns a Mock object that returns the 'filename'i on call to read()."""
+    filemock = mock.Mock()
+    filemock.read.return_value = datum
+    return filemock
+
+class TestSpooler(SigAsyncSpool):
+    """A test Spool subclass that doesn't write to disk.
+    Instead it stores the datums, and processes them on process.
+    Patches open to read the datum rather than a file.
+
+    """
+    def __init__(self, *args, **kwargs):
+        super(TestSpooler, self).__init__(*args, **kwargs)
+        self._submitted_datums = []
+        self._processed_datums = []
+
+    def submit_datum(self, datum):
+        self._submitted_datums.append(datum)
+
+    #@mock.patch('sigasync.sigasync_spooler.open', fakeopen)
+    def process(self, function=None):
+        import sigasync.sigasync_spooler
+        self._processed_datums = []
+        try:
+            sigasync.sigasync_spooler.open = fakeopen
+            while True:
+                if not len(self._submitted_datums):
+                    break
+                entry = self._submitted_datums.pop(0)
+                self.execute(entry)
+                self._processed_datums.append(entry)
+        finally:
+            del sigasync.sigasync_spooler.open
+
+def mock_getspoolqueue(name):
+    """Returns a TestSpooler instance when called."""
+    return TestSpooler(name)
+
+class SpoolerTimeoutTestCase(unittest.TestCase):
+    def setUp(self):
+        mockhandler.reset_mock()
+
+    # patch get_spoolqueue to return our test spooler
+    @mock.patch('sigasync.sigasync_handler.get_spoolqueue', mock_getspoolqueue)
+    def test_existing_behaviour(self):
+        # create our signal handler without a timeout
+        handler = sigasync_handler(mockhandler, spooler='test')
+        # send it a message
+        handler(sender=_Anonymous(), instance=None)
+        # check our handler was called as expected
+        assert len(mockhandler.call_args_list) == 1
+
+    # patch get_spoolqueue to return our test spooler
+    @mock.patch('sigasync.sigasync_handler.get_spoolqueue', mock_getspoolqueue)
+    def test_normal_submission(self):
+        # create our signal handler with a timeout
+        handler = sigasync_handler(mockhandler, spooler='test', timeout=10)
+        # send it a message
+        handler(sender=_Anonymous(), instance=None)
+        # check our handler was called as expected
+        assert len(mockhandler.call_args_list) == 1
+
+    @mock.patch('sigasync.sigasync_handler.get_spoolqueue', mock_getspoolqueue)
+    def test_expired_submission(self):
+        # create our signal handler with a timeout
+        handler = sigasync_handler(mockhandler, spooler='test', timeout=10)
+        with mock.patch('sigasync.sigasync_spooler.time') as mtime:
+            # advance time by 11 seconds. this should discard job
+            mtime.time.side_effect = lambda: time() + 11
+            # send job to handler
+            handler(sender=_Anonymous(), instance=None)
+            # check our patched time was called for sanity
+            assert mtime.time.called
+            # our handler should not have been called
+            assert not mockhandler.called, mockhandler.call_args_list
+
+
+# End
