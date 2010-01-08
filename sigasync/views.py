@@ -15,6 +15,7 @@ from models import SigasyncTest2
 
 from sigasync_spooler import get_spoolqueue
 import pdb
+import time
 
 DEFAULT_QUEUE_LABEL="x"
 
@@ -42,6 +43,7 @@ def spooler_http_gateway(request, spooler):
     sender = kwargs.pop('sender')[0]
     instance = kwargs.pop('instance')[0]
     created = kwargs.pop('created', [None])[0]
+    timeout = kwargs.pop('timeout', [None])[0]
     func_module, _, func_name = kwargs.pop('handler')[0].rpartition('.')
     data = { 
         "func_name": func_name,
@@ -52,7 +54,13 @@ def spooler_http_gateway(request, spooler):
             'True': "1",
             'False': "0"
         }.get(created, "0"),
+        "create_time": time.time(),
+        "spooler": spooler
     }
+
+    if timeout:
+        data['timeout'] = timeout
+    
     cleaned_kwargs = {}
     
     for k in kwargs:
