@@ -401,8 +401,9 @@ class SigasyncHttp(WoomeTestCase):
         from django.dispatch import dispatcher
         from django.db.models import signals
         from sigasync import sigasync_handler
-        _OLD_HANDLER = sigasync_handler.HANDLE_VIA_HTTP
-        sigasync_handler.HANDLE_VIA_HTTP = ['test']
+        from django.conf import settings
+        _OLD_HANDLER = settings.SPOOLER_VIA_HTTP
+        settings.SPOOLER_VIA_HTTP = ['test']
         try:
             async_connect(http_test_handler, spooler='test', signal=test_signal, sender=Person)
             data = {}
@@ -420,7 +421,7 @@ class SigasyncHttp(WoomeTestCase):
                 assert data['spooler'] == 'test'
                 assert data['data']['instance'] == str(person.id)
         finally:
-            sigasync_handler.HANDLE_VIA_HTTP = _OLD_HANDLER
+            settings.SPOOLER_VIA_HTTP = _OLD_HANDLER
 
 
 test_signal = object()

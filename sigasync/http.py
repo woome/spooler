@@ -3,7 +3,7 @@ from webserviceapp import webservice
 from django.dispatch.dispatcher import _Anonymous
 
 SPOOLERHANDLERS = {
-    'emailapp.signals.passwordreset_email_handler': 'emailhighpri',
+    'emailapp.newmailsignals.siteinvite_email_handler': 'emailhighpri_http',
 }
 
 def get_spooler(handler):

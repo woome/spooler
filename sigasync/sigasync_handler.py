@@ -13,16 +13,12 @@ from django.dispatch.dispatcher import _Anonymous
 
 from sigasync import http
 
-HANDLE_VIA_HTTP = [
-    'emailhighpri',
-]
-
 def sigasync_handler(func, spooler='default', timeout=None):
     logger = logging.getLogger("sigasync.sigasync_handler")
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("called")
 
-    if spooler in HANDLE_VIA_HTTP:
+    if spooler in settings.SPOOLER_VIA_HTTP:
         def httpsend(instance, sender, *args, **kwargs):
             http.send_handler(spooler, func, instance, sender, *args, **kwargs)
         return httpsend
