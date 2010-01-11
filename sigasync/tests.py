@@ -1,9 +1,11 @@
 
 """Unit tests for sigasync"""
 
+from __future__ import with_statement
+from cgi import parse_qs
+import simplejson
 import mock
 import tempfile
-import time
 import unittest
 import pdb
 from django.test.client import Client
@@ -13,7 +15,7 @@ from sigasync.sigasync_spooler import SigAsyncSpool
 from sigasync.sigasync_handler import sigasync_handler
 from django.dispatch.dispatcher import _Anonymous
 from multiprocessing import Process
-from time import sleep
+from time import sleep, time
 from os.path import join as pathjoin
 import os
 import signal
@@ -23,6 +25,10 @@ from sigasync.dispatcher import async_connect
 from django.dispatch import dispatcher
 from django.core.cache import cache
 from webapp.models import Person
+from testsupport.woometestcase import WoomeTestCase
+from testsupport.contextmanagers import URLOverride
+import sigasync.http
+
 
 class SigasyncQueue(unittest.TestCase):
     """Basic tests for the SigAsync queue
@@ -100,8 +106,10 @@ class SpoolerTest(unittest.TestCase):
         s.submit(submit_filename)
         dc = [pathjoin(s._in, direntry) for direntry in os.listdir(s._in)]
         fd = None
+        filename = None
         try:
-            fd = open(dc[0])
+            filename = dc[0]
+            fd = open(filename)
             content = fd.read()
         except Exception:
             assert False, "test1: the incoming file didn't arrive"
@@ -117,15 +125,17 @@ class SpoolerTest(unittest.TestCase):
         s.process()
 
         # Now assert it's gone to the output
-        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
+        # dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
         fd = None
         try:
-            fd = open(dc[0])
+            filename = filename.replace('/in/', '/out/')
+            # read the last file.
+            fd = open(filename)
             content = fd.read()
         except Exception:
             assert False, "test1: the processed file didn't arrive"
         else:
-            assert content == "hello!\n", content ## we print it, so it has a newline on the end
+            assert content == "hello!\n" ## we print it, so it has a newline on the end
         finally:
             os.unlink(submit_filename)
             try:
@@ -316,6 +326,109 @@ class SigAsyncTest(unittest.TestCase):
         rmtree(self._spool_dir)
         super(self.__class__, self).setUp()
 
+class MockSpoolQueue(object):
+    def __call__(self, spooler):
+        class _MockSpoolQueue(object):
+            def submit_datum(self, data):
+                self.data = parse_qs(data)
+            def process(self):
+                pass
+        sq = _MockSpoolQueue()
+        sq.spooler = spooler
+        if getattr(self, 'spoolqueue', None):
+            self.spoolqueue.append(sq)
+        else:
+            self.spoolqueue = [sq]
+        return sq
+
+
+class SigasyncHttp(WoomeTestCase):
+    def test_view_params(self):
+        data = {}
+        def testview(request, spooler):
+            data.update({
+                'spooler': spooler,
+                'data': request.POST.copy(),
+            })
+            from django.http import HttpResponse
+            return HttpResponse('OK')
+        person = self.reg_and_get_person('ht')
+        with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.passwordreset_email_handler',
+                created=True)
+            assert data['spooler'] == 'emailhighpri'
+            assert data['data']['instance'] == str(person.id)
+
+    def test_submitted_datum(self):
+        person = self.reg_and_get_person('ht')
+        from sigasync import views
+        oldview = views.get_spoolqueue
+        spoolqueue = MockSpoolQueue()
+        views.get_spoolqueue = spoolqueue
+        try:
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.passwordreset_email_handler',
+                created=True)
+            assert spoolqueue.spoolqueue[-1].spooler == 'emailhighpri'
+            assert spoolqueue.spoolqueue[-1].data['func_name'] == ['passwordreset_email_handler']
+            assert spoolqueue.spoolqueue[-1].data['func_module'] == ['emailapp.signals']
+            assert spoolqueue.spoolqueue[-1].data['sender'] == ['webapp__Person']
+            assert spoolqueue.spoolqueue[-1].data['instance'] == [str(person.id)]
+            assert spoolqueue.spoolqueue[-1].data['created'] == ['1']
+            assert len(spoolqueue.spoolqueue) == 1
+        finally:
+            views.get_spoolqueue = oldview
+    
+    
+    def test_list_submission_in_kwargs(self):
+        person = Person.not_banned.latest('id')
+        from sigasync import views
+        oldview = views.get_spoolqueue
+        spoolqueue = MockSpoolQueue()
+        views.get_spoolqueue = spoolqueue
+        
+        try:
+            sigasync.http.send(instance=person, sender=Person,
+                handler='emailapp.signals.contacts_siteinvites_handler',
+                created=True, contacts_id=[1,2,3,4])
+            expected_contacts_id = simplejson.loads('{"contacts_id": ["1", "2", "3", "4"]}')['contacts_id']
+            assert simplejson.loads(spoolqueue.spoolqueue[-1].data['kwargs'][0])['contacts_id'] == expected_contacts_id
+        finally:
+            views.get_spoolqueue = oldview
+
+    def test_dispatcher_sends_via_http(self):
+        from django.dispatch import dispatcher
+        from django.db.models import signals
+        from sigasync import sigasync_handler
+        from django.conf import settings
+        _OLD_HANDLER = settings.SPOOLER_VIA_HTTP
+        settings.SPOOLER_VIA_HTTP = ['test']
+        try:
+            async_connect(http_test_handler, spooler='test', signal=test_signal, sender=Person)
+            data = {}
+            def testview(request, spooler):
+                data.update({
+                    'spooler': spooler,
+                    'data': request.POST.copy(),
+                })
+                from django.http import HttpResponse
+                return HttpResponse('OK')
+            person = self.reg_and_get_person('ht')
+            with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+                dispatcher.send(instance=person, sender=Person,
+                    signal=test_signal)
+                assert data['spooler'] == 'test'
+                assert data['data']['instance'] == str(person.id)
+        finally:
+            settings.SPOOLER_VIA_HTTP = _OLD_HANDLER
+
+
+test_signal = object()
+def http_test_handler(sender, instance, **kwargs):
+    raise Exception('I SHOULD NOT BE CALLED')
+
+
 
 mockhandler = mock.Mock()
 mockhandler.__module__ = __name__
@@ -390,7 +503,7 @@ class SpoolerTimeoutTestCase(unittest.TestCase):
         handler = sigasync_handler(mockhandler, spooler='test', timeout=10)
         with mock.patch('sigasync.sigasync_spooler.time') as mtime:
             # advance time by 11 seconds. this should discard job
-            mtime.time.side_effect = lambda: time.time() + 11
+            mtime.time.side_effect = lambda: time() + 11
             # send job to handler
             handler(sender=_Anonymous(), instance=None)
             # check our patched time was called for sanity
