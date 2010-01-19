@@ -101,6 +101,8 @@ class SpoolContainer(object):
         if self._base is None:
             self._base = settings.SPOOLER_DIRECTORY
 
+        self._pid_base = settings.SPOOLER_PID_BASE
+
         # The keys are logical queues, the values are real queues
         queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
         qdict = {}
@@ -174,15 +176,15 @@ class SpoolContainer(object):
             qd['nprocs'] -= 1
 
     def _write_pid(self):
-        with open(pathjoin(self._base, '%s.pid' % os.getpid()), 'w') as f:
+        with open(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
             f.write("%s" % os.getpid())
 
     def _remove_pid(self):
         try:
-            os.unlink(pathjoin(self._base, '%s.pid' % os.getpid()))
+            os.unlink(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
         except Exception, e:
             logging.getLogger("Spool").warning(
-                    "Failed to remove pidfile %s.pid" % os.getpid())
+                    "Failed to remove pidfile %s%s.pid" % (self._pid_base, os.getpid()))
 
     def run(self):
         logger = logging.getLogger("sigasync.spooler.SpoolContainer.run")
@@ -658,7 +660,7 @@ def main():
     out_log = opts.get('-o', '/dev/null')
 
     if 'start' in args[0:1]:
-        if glob.glob("%s/*.pid" % container._base):
+        if glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
             print "Failed to start - pid files exist"
             sys.exit(1)
 
@@ -667,7 +669,7 @@ def main():
         container.run()
 
     elif 'stop' in args[0:1]:
-        for f in glob.glob("%s/*.pid" % container._base):
+        for f in glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
             with open(pathjoin(container._base, f)) as fh:
                 pid = fh.read()
             try:
