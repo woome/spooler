@@ -646,85 +646,84 @@ def _import_object(name):
         raise ImportError("cannot import name %s" % obj_name)
     return obj
 
+if __name__ == "__main__":
+    ## Django command environment config
 
-## Django command environment config
+    import os
+    import sys
 
-import os
-import sys
+    def discover_django_location():
+        """This is a duplicate of a fn found in config_helper.py
 
-def discover_django_location():
-    """This is a duplicate of a fn found in config_helper.py
+        It finds django in some common locations."""
 
-    It finds django in some common locations."""
-
-    try: 
-        location = os.environ["DJANGO_PATH_DIR"]
-    except KeyError:
-        try:
-            location = os.path.join(os.environ["HOME"], "django-hg")
+        try: 
+            location = os.environ["DJANGO_PATH_DIR"]
         except KeyError:
-            pass
-
-    if os.path.exists(location):
-        return location
-
-# Set the path so the cron environment can find django and woome
-sys.path = [os.path.dirname(__file__) + "/../../../woome", discover_django_location()] + sys.path
-
-# Do the standard django/cron jig
-from django.core.management import setup_environ
-import settings
-setup_environ(settings)
-
-def main():
-    import getopt
-    opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
-    opts = dict(opts)
-    if '--nodjango' not in opts:
-        setup_django()
-    if '-m' in opts:
-        container = _import_object(opts['-m'])()
-    else:
-        container = SpoolContainer()
-    err_log = opts.get('-e', '/dev/null')
-    out_log = opts.get('-o', '/dev/null')
-
-    if 'start' in args[0:1]:
-        if glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-            print "Failed to start - pid files exist"
-            sys.exit(1)
-
-        if '-D' not in opts:
-            daemonize(out_log=out_log, err_log=err_log)
-        container.run()
-
-    elif 'stop' in args[0:1]:
-        for f in glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-            with open(pathjoin(container._base, f)) as fh:
-                pid = fh.read()
             try:
-                os.kill(int(pid), signal.SIGINT)
-                # Succesfull kill so remove the pid file
-                os.remove(pathjoin(container._base, f))
-                print "Killing process %s." % pid
-            except OSError, e:
-                print "Failed to kill process %s: %s" % (pid, e)
+                location = os.path.join(os.environ["HOME"], "django-hg")
+            except KeyError:
+                pass
+
+        if os.path.exists(location):
+            return location
+
+    # Set the path so the cron environment can find django and woome
+    sys.path = [os.path.dirname(__file__) + "/../../../woome", discover_django_location()] + sys.path
+
+    # Do the standard django/cron jig
+    from django.core.management import setup_environ
+    import settings
+    setup_environ(settings)
+
+    def main():
+        import getopt
+        opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
+        opts = dict(opts)
+        if '--nodjango' not in opts:
+            setup_django()
+        if '-m' in opts:
+            container = _import_object(opts['-m'])()
+        else:
+            container = SpoolContainer()
+        err_log = opts.get('-e', '/dev/null')
+        out_log = opts.get('-o', '/dev/null')
+
+        if 'start' in args[0:1]:
+            if glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
+                print "Failed to start - pid files exist"
                 sys.exit(1)
-    else:
-        print >> sys.stdout, """usage: %s [options] start
-        options:
-        -D:         do not daemonize
-        -e:         error log file
-        -o:         stdout log file
-        -s <num>:   number of seconds for each sleep loop. (ignored)
-        -m:         python path of spool container to instantiate/factory method. 
-        --nodjango: do no load django environment
 
-        example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
+            if '-D' not in opts:
+                daemonize(out_log=out_log, err_log=err_log)
+            container.run()
 
-        """ % (sys.argv[0], sys.argv[0])
+        elif 'stop' in args[0:1]:
+            for f in glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
+                with open(pathjoin(container._base, f)) as fh:
+                    pid = fh.read()
+                try:
+                    os.kill(int(pid), signal.SIGINT)
+                    # Succesfull kill so remove the pid file
+                    os.remove(pathjoin(container._base, f))
+                    print "Killing process %s." % pid
+                except OSError, e:
+                    print "Failed to kill process %s: %s" % (pid, e)
+                    sys.exit(1)
+        else:
+            print >> sys.stdout, """usage: %s [options] start
+            options:
+            -D:         do not daemonize
+            -e:         error log file
+            -o:         stdout log file
+            -s <num>:   number of seconds for each sleep loop. (ignored)
+            -m:         python path of spool container to instantiate/factory method. 
+            --nodjango: do no load django environment
 
-if __name__ == '__main__':
+            example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
+
+            """ % (sys.argv[0], sys.argv[0])
+
     main()
 
 
