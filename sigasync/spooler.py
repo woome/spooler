@@ -646,6 +646,7 @@ def _import_object(name):
         raise ImportError("cannot import name %s" % obj_name)
     return obj
 
+from django.conf import settings
 def main():
     import getopt
     opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
