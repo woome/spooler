@@ -646,7 +646,36 @@ def _import_object(name):
         raise ImportError("cannot import name %s" % obj_name)
     return obj
 
-from django.conf import settings
+
+## Django command environment config
+
+import os
+import sys
+
+def discover_django_location():
+    """This is a duplicate of a fn found in config_helper.py
+
+    It finds django in some common locations."""
+
+    try: 
+        location = os.environ["DJANGO_PATH_DIR"]
+    except KeyError:
+        try:
+            location = os.path.join(os.environ["HOME"], "django-hg")
+        except KeyError:
+            pass
+
+    if os.path.exists(location):
+        return location
+
+# Set the path so the cron environment can find django and woome
+sys.path = [os.path.dirname(__file__) + "/../../../woome", discover_django_location()] + sys.path
+
+# Do the standard django/cron jig
+from django.core.management import setup_environ
+import settings
+setup_environ(settings)
+
 def main():
     import getopt
     opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
