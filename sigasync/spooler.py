@@ -616,24 +616,6 @@ def daemonize(our_home_dir='.', out_log='/dev/null', err_log='/dev/null'):
     # Set custom file descriptors so that they get proper buffering.
     sys.stdout, sys.stderr = so, se
 
-def setup_django():
-    woome_dir = os.path.abspath(os.path.dirname(__file__) + "/../../woome")
-    sys.path.insert(0, woome_dir)
-    import config.importname
-    local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
-    try:
-        django_dir = local_config.DJANGO_PATH_DIR
-    except AttributeError:
-        django_dir = config.discover_django_location()
-    if django_dir:
-        sys.path.insert(1, django_dir)
-        from django.core.management import setup_environ
-        import settings
-        setup_environ(settings)
-    else:
-        raise ImportError("Unable to find Django")
-
-    import global_signals_connector
 
 def _import_object(name):
     parts = name.split('.')
@@ -676,12 +658,12 @@ if __name__ == "__main__":
     import settings
     setup_environ(settings)
 
+    import global_signals_connector
+
     def main():
         import getopt
-        opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:', ['nodjango'])
+        opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:')
         opts = dict(opts)
-        if '--nodjango' not in opts:
-            setup_django()
         if '-m' in opts:
             container = _import_object(opts['-m'])()
         else:
@@ -718,7 +700,6 @@ if __name__ == "__main__":
             -o:         stdout log file
             -s <num>:   number of seconds for each sleep loop. (ignored)
             -m:         python path of spool container to instantiate/factory method. 
-            --nodjango: do no load django environment
 
             example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
 
