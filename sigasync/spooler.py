@@ -684,7 +684,7 @@ if __name__ == "__main__":
         out_log = opts.get('-o', '/dev/null')
 
         if 'start' in args[0:1]:
-            if glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
+            if glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
                 print "Failed to start - pid files exist"
                 sys.exit(1)
 
@@ -693,7 +693,7 @@ if __name__ == "__main__":
             container.run()
 
         elif 'stop' in args[0:1]:
-            for f in glob.glob("%s/%s*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
+            for f in glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
                 with open(pathjoin(container._base, f)) as fh:
                     pid = fh.read()
                 try:
