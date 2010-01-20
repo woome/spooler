@@ -669,7 +669,7 @@ if __name__ == "__main__":
             return location
 
     # Set the path so the cron environment can find django and woome
-    sys.path = [os.path.dirname(__file__) + "/../../../woome", discover_django_location()] + sys.path
+    sys.path = [os.path.dirname(__file__) + "/../../woome", discover_django_location()] + sys.path
 
     # Do the standard django/cron jig
     from django.core.management import setup_environ
