@@ -29,6 +29,9 @@ class SpoolExists(Exception):
 class SpoolDoesNotExist(Exception):
     pass
 
+class ConfigurationError(Exception):
+    pass
+
 class FailError(Exception):
     """fail the entry"""
     pass
@@ -97,16 +100,19 @@ class SpoolContainer(object):
     def _read_config(self):
         """Pull data from config into local data structures."""
         from django.conf import settings
+        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         # Allow base directory to be overridden (useful for testing)
         if self._base is None:
             self._base = settings.SPOOLER_DIRECTORY
 
         self._pid_base = settings.SPOOLER_PID_BASE
 
-        # The keys are logical queues, the values are real queues
-        queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
+        queues = settings.SPOOLER_SPOOLS_ENABLED
+        if not queues:
+            logger.error("No spools enabled.")
+            raise ConfigurationError("No spools enabled.")
+
         qdict = {}
-        #import ipdb; ipdb.set_trace()
         defaults = settings.SPOOLER_DEFAULTS
         for queue in queues:
             queue_dir = pathjoin(self._base, queue)
