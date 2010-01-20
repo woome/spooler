@@ -107,10 +107,16 @@ class SpoolContainer(object):
 
         self._pid_base = settings.SPOOLER_PID_BASE
 
-        queues = settings.SPOOLER_SPOOLS_ENABLED
+        try:
+            queues = settings.SPOOLER_SPOOLS_ENABLED
+        except AttributeError:
+            logger.warning("SPOOLER_SPOOLS_ENABLED is not defined, "
+                           "running all by default.")
+            queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
         if not queues:
             logger.error("No spools enabled.")
             raise ConfigurationError("No spools enabled.")
+        logger.info("Running spools for: %s", ', '.join(queues))
 
         qdict = {}
         defaults = settings.SPOOLER_DEFAULTS
