@@ -11,10 +11,21 @@ import logging
 from django.conf import settings
 from django.dispatch.dispatcher import _Anonymous
 
+from sigasync import http
+
+HANDLE_VIA_HTTP = [
+    'emailhighpri',
+]
+
 def sigasync_handler(func, spooler='default', timeout=None):
     logger = logging.getLogger("sigasync.sigasync_handler")
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug("called")
+
+    if spooler in HANDLE_VIA_HTTP:
+        def httpsend(instance, sender, *args, **kwargs):
+            http.send_handler(spooler, func, instance, sender, *args, **kwargs)
+        return httpsend
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
         logger = logging.getLogger("sigasync.sigasync_handler.continuation")
