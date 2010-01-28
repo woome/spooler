@@ -95,7 +95,7 @@ class SigAsyncSpool(Spool):
             data = dict(pairs)
 
             create_time = data.pop('create_time', None)
-            spooler = data.pop('spooler')
+            spooler = data.pop('spooler', None)
             timeout = data.pop('timeout', None)
             if timeout:
                 if not create_time:
