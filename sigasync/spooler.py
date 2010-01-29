@@ -119,40 +119,37 @@ class SpoolContainer(object):
         logger.info("Running spools for: %s", ', '.join(queues))
 
         qdict = {}
-        defaults = settings.SPOOLER_DEFAULTS
+        defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
         for queue in queues:
             queue_dir = pathjoin(self._base, queue)
-            try:
-                qconf = defaults.copy()
-                qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper()))
-            except AttributeError:
-                qconf = defaults
+            qconf = defaults.copy()
+            qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
 
-            in_, out, retry15, retry60, fail = [pathjoin(queue_dir, d) for d in
-                                 ['in', 'out', 'retry15', 'retry60', 'failed']]
+            in_, out = [pathjoin(queue_dir, d) for d in ['in', 'out']]
+            retries = sorted(set(qconf.get('retries', [15, 60])))
+            fail_dirs = [pathjoin(queue_dir, d) for d in
+                            ['retry%d' % t for t in retries] + ['failed']]
             qdict[queue] = {'incoming': in_,
                             'outgoing': out,
-                            'failure': retry15,
-                            'minprocs': qconf['minprocs'],
-                            'maxprocs': qconf['maxprocs'],
-                            'nprocs': qconf['minprocs'],
-                            'procs': []}
-            qdict[queue+'_retry15'] = {'incoming': retry15,
-                                       'outgoing': out,
-                                       'failure': retry60,
-                                       'minprocs': 1,
-                                       'maxprocs': 2,
-                                       'nprocs': 1,
-                                       'procs': [],
-                                       'filter': self._delay_filter(15)}
-            qdict[queue+'_retry60'] = {'incoming': retry60,
-                                       'outgoing': out,
-                                       'failure': fail,
-                                       'minprocs': 1,
-                                       'maxprocs': 2,
-                                       'nprocs': 1,
-                                       'procs': [],
-                                       'filter': self._delay_filter(60)}
+                            'failure': fail_dirs[0],
+                            'minprocs': qconf.get('minprocs', 1),
+                            'maxprocs': qconf.get('maxprocs', 4),
+                            'nprocs': qconf.get('minprocs', 1),
+                            'procs': [],
+                            }
+            t_prev = 0
+            for t, in_dir, fail_dir in zip(retries, fail_dirs, fail_dirs[1:]):
+                qname = queue + '_retry%d' % t
+                qdict[qname] = {'incoming': in_dir,
+                                'outgoing': out,
+                                'failure': fail_dir,
+                                'minprocs': qconf.get('retry_minprocs', 1),
+                                'maxprocs': qconf.get('retry_maxprocs', 2),
+                                'nprocs': qconf.get('retry_minprocs', 1),
+                                'procs': [],
+                                'filter': self._delay_filter(t-t_prev),
+                                }
+                t_prev = t
         self._queues = qdict
 
     def _start_spools(self):
@@ -293,13 +290,15 @@ class SpoolContainer(object):
         delta = timedelta(minutes=minutes)
 
         def _filter(entry):
+            """Filter out entries at less than %d minutes old by mtime."""
             try:
                 st = os.lstat(entry)
             except Exception:
                 return False
-            diff = datetime.now() - datetime.fromtimestamp(st.st_ctime)
+            diff = datetime.now() - datetime.fromtimestamp(st.st_mtime)
             return diff > delta
 
+        _filter.__doc__ = _filter.__doc__ % minutes
         return _filter
 
 
@@ -575,6 +574,9 @@ class Spool(object):
                     raise e
             else:
                 try:
+                    # Touch the file so we have a consistent way to measure
+                    # time for retries
+                    os.utime(processing_entry, None)
                     function(processing_entry)
                 except Exception, e:
                     failed_entry = self._move_to_failed(processing_entry)
