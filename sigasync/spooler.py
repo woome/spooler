@@ -376,6 +376,8 @@ class Spool(object):
                        on entries
 
         """
+        self.logger = logging.getLogger("sigasync.spooler.Spool")
+
         if manager is None:
             self.manager = SpoolManager()
         else:
@@ -397,6 +399,7 @@ class Spool(object):
                   self._out,
                   self._processing_base,
                   self._failed]:
+            self.logger.debug("checking %s" % p)
             if not pathexists(p):
                 try:
                     os.makedirs(p)
