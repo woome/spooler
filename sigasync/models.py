@@ -10,7 +10,7 @@ class SigasyncTest1(models.Model):
     queue_label = models.CharField(max_length=40)
 
 class SigasyncTest2(models.Model):
-    test1 = models.ForeignKey(SigasyncTest1, raw_id_admin=True)
+    test1 = models.ForeignKey(SigasyncTest1)
 
 
 # Setup the connections to the signal handlers
