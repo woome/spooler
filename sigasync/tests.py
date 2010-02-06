@@ -22,7 +22,7 @@ import signal
 from shutil import rmtree
 from datetime import datetime
 from sigasync.dispatcher import async_connect
-from django.dispatch import dispatcher
+from django.dispatch.dispatcher import Signal
 from django.core.cache import cache
 from webapp.models import Person
 from testsupport.woometestcase import WoomeTestCase
@@ -301,7 +301,7 @@ class SigAsyncTest(unittest.TestCase):
         super(self.__class__, self).setUp()
 
     def _test_submit(self):
-        async_test1 = object()
+        async_test1 = Signal()
         async_connect(print_handler, signal=async_test1, sender=Person)
         start = datetime.now()
         cache.set('sigasync_test', start, 30*60)
@@ -424,7 +424,7 @@ class SigasyncHttp(WoomeTestCase):
             settings.SPOOLER_VIA_HTTP = _OLD_HANDLER
 
 
-test_signal = object()
+test_signal = Signal()
 def http_test_handler(sender, instance, **kwargs):
     raise Exception('I SHOULD NOT BE CALLED')
 
