@@ -11,7 +11,12 @@ def async_connect(func, spooler='default', timeout=None, **kwargs):
             .warning('timeout set to ZERO!, no jobs will be processed!')
         return
     func = handler(func, spooler=spooler, timeout=timeout)
-    dispatcher.connect(func, weak=False, **kwargs)
-
+    try:
+        signal = kwargs.pop('signal')
+        signal.connect(func, weak=False, **kwargs)
+    except KeyError, e:
+        logging.getLogger('sigasync.dispatcher.async_connect')\
+            .critical('no signal provided, cannot connect!')
+        raise
 #END
 
