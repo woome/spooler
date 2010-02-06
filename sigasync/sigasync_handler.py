@@ -9,7 +9,6 @@ from sigasync_spooler import get_spoolqueue
 
 import logging
 from django.conf import settings
-from django.dispatch.dispatcher import _Anonymous
 
 from sigasync import http
 
@@ -39,7 +38,7 @@ def sigasync_handler(func, spooler='default', timeout=None):
         data = { 
             "func_name": func.__name__,
             "func_module": func.__module__,
-            "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) if not isinstance(sender, _Anonymous) else '_Anonymous',
+            "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) if not sender is None else 'None',
             "instance": instance.id if instance else None,
             "created": { 
                 True: "1",

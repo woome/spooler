@@ -1,6 +1,5 @@
 import urllib
 from webserviceapp import webservice
-from django.dispatch.dispatcher import _Anonymous
 
 SPOOLERHANDLERS = {
     'emailapp.newmailsignals.siteinvite_email_handler': 'emailhighpri_http',
@@ -13,7 +12,7 @@ def send(instance, sender, handler, **kwargs):
     spooler = get_spooler(handler)
     data = {
         'instance': instance.id,
-        'sender': '%s__%s' % (sender._meta.app_label, sender.__name__) if not isinstance(sender, _Anonymous) else '_Anonymous',
+        'sender': '%s__%s' % (sender._meta.app_label, sender.__name__) if not sender is None else 'None',
         'handler': handler,
     }
 
@@ -25,7 +24,7 @@ def send(instance, sender, handler, **kwargs):
 def send_handler(spooler, handler, instance, sender, **kwargs):
     data = {
         'instance': instance.id,
-        'sender': '%s__%s' % (sender._meta.app_label, sender.__name__) if not isinstance(sender, _Anonymous) else '_Anonymous',
+        'sender': '%s__%s' % (sender._meta.app_label, sender.__name__) if not sender is None else 'None',
         'handler': '%s.%s' % (handler.__module__, handler.__name__),
     }
 

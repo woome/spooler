@@ -13,7 +13,6 @@ from sigasync.spooler import *
 from sigasync.sigasync_spooler import SigAsyncContainer
 from sigasync.sigasync_spooler import SigAsyncSpool
 from sigasync.sigasync_handler import sigasync_handler
-from django.dispatch.dispatcher import _Anonymous
 from multiprocessing import Process
 from time import sleep, time
 from os.path import join as pathjoin
@@ -306,7 +305,7 @@ class SigAsyncTest(unittest.TestCase):
         start = datetime.now()
         cache.set('sigasync_test', start, 30*60)
         p = Person.objects.all()[0]
-        dispatcher.send(signal=async_test1, sender=Person, instance=p)
+        async_test1.send(sender=Person, instance=p)
         while cache.get('sigasync_test_finished') is None:
             sleep(1)
         cache.delete('sigasync_test')
@@ -398,7 +397,6 @@ class SigasyncHttp(WoomeTestCase):
             views.get_spoolqueue = oldview
 
     def test_dispatcher_sends_via_http(self):
-        from django.dispatch import dispatcher
         from django.db.models import signals
         from sigasync import sigasync_handler
         from django.conf import settings
@@ -416,8 +414,7 @@ class SigasyncHttp(WoomeTestCase):
                 return HttpResponse('OK')
             person = self.reg_and_get_person('ht')
             with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
-                dispatcher.send(instance=person, sender=Person,
-                    signal=test_signal)
+                test_signal.send(instance=person, sender=Person)
                 assert data['spooler'] == 'test'
                 assert data['data']['instance'] == str(person.id)
         finally:
@@ -483,7 +480,7 @@ class SpoolerTimeoutTestCase(unittest.TestCase):
         # create our signal handler without a timeout
         handler = sigasync_handler(mockhandler, spooler='test')
         # send it a message
-        handler(sender=_Anonymous(), instance=None)
+        handler(sender=None, instance=None)
         # check our handler was called as expected
         assert len(mockhandler.call_args_list) == 1
 
@@ -493,7 +490,7 @@ class SpoolerTimeoutTestCase(unittest.TestCase):
         # create our signal handler with a timeout
         handler = sigasync_handler(mockhandler, spooler='test', timeout=10)
         # send it a message
-        handler(sender=_Anonymous(), instance=None)
+        handler(sender=None, instance=None)
         # check our handler was called as expected
         assert len(mockhandler.call_args_list) == 1
 
@@ -505,7 +502,7 @@ class SpoolerTimeoutTestCase(unittest.TestCase):
             # advance time by 11 seconds. this should discard job
             mtime.time.side_effect = lambda: time() + 11
             # send job to handler
-            handler(sender=_Anonymous(), instance=None)
+            handler(sender=None, instance=None)
             # check our patched time was called for sanity
             assert mtime.time.called
             # our handler should not have been called

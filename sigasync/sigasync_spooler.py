@@ -9,7 +9,6 @@ except ImportError, e:
 from django.conf import settings
 from django.db import models
 from django.db import transaction
-from django.dispatch.dispatcher import _Anonymous
 from spooler import Spool, SpoolContainer, SpoolManager
 from spooler import FailError
 import logging
@@ -118,9 +117,9 @@ class SigAsyncSpool(Spool):
             del data["func_module"]
 
             # Get the instance data
-            model = _Anonymous() if data["sender"] == '_Anonymous' else \
+            model = None if data["sender"] == 'None' else \
                 models.get_model(*(data["sender"].split("__")))
-            if isinstance(model, _Anonymous):
+            if model is None:
                 instance = data["instance"]
             else:
                 try:
