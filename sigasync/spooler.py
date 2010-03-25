@@ -651,29 +651,22 @@ if __name__ == "__main__":
     import os
     import sys
 
-    def discover_django_location():
-        """This is a duplicate of a fn found in config_helper.py
+    def setup_environment(filepath, depth):
+        """setup our django 'app' environment"""
+        sys.path = [os.path.abspath(os.path.dirname(filepath) + "%s/woome" % ("/.." * depth))] + sys.path
+        import config.importname
+        local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
+        sys.path.insert(
+            0, 
+            getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg')))
+        from django.core.management import setup_environ
+        import settings
+        setup_environ(settings)
 
-        It finds django in some common locations."""
+    if __name__ == "__main__":
+        setup_environment(__file__, 2)
 
-        try: 
-            location = os.environ["DJANGO_PATH_DIR"]
-        except KeyError:
-            try:
-                location = os.path.join(os.environ["HOME"], "django-hg")
-            except KeyError:
-                pass
-
-        if os.path.exists(location):
-            return location
-
-    # Set the path so the cron environment can find django and woome
-    sys.path = [os.path.dirname(__file__) + "/../../woome", discover_django_location()] + sys.path
-
-    # Do the standard django/cron jig
-    from django.core.management import setup_environ
-    import settings
-    setup_environ(settings)
+    from django.conf import settings
 
     import global_signals_connector
 
