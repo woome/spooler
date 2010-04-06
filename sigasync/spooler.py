@@ -658,7 +658,7 @@ if __name__ == "__main__":
         local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
         sys.path.insert(
             0, 
-            getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg')))
+            getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg-1.1')))
         from django.core.management import setup_environ
         import settings
         setup_environ(settings)
