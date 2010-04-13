@@ -159,8 +159,35 @@ class SpoolContainer(object):
 
     def _start_spool(self, queue):
         logger = logging.getLogger("sigasync.spooler.SpoolContainer")
-        process = Process(target=self.spool_process,
-                          args=(queue, self._queues[queue]))
+        container=self
+        class DebugProcess(object):
+            def __init__(self, group=None, target=None, name="", args=[], kwargs={}):
+                self.target = target
+                self.args = args
+                self.kwargs = kwargs
+                self.exitcode = -1
+                self.daemon = False
+                self.pid = False
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                try:
+                    kwargs = self.kwargs.copy()
+                    kwargs["once_only"] = True
+                    self.target(*self.args, **kwargs)
+                except Exception, e:
+                    self.exitcode = 1
+                else:
+                    self.exitcode = 0
+
+                return False
+                
+        process = Process(
+            target=self.spool_process,
+            args=(queue, self._queues[queue])
+            )
         process.daemon = True
         process.start()
         self._queues[queue]['procs'].append(process)
@@ -259,7 +286,7 @@ class SpoolContainer(object):
                             entry_filter=queue_settings.get('filter'))
         return spool
 
-    def spool_process(self, queue, queue_settings):
+    def spool_process(self, queue, queue_settings, once_only=False):
         """Run a spool in a processing loop until it should die.
 
         A spool process should die after it has processed a certain number of
@@ -268,6 +295,7 @@ class SpoolContainer(object):
         even if it exceeds the maximum number of jobs. This lets us put some
         bound on ordering.
 
+        once_only = True   causes the processing loop to execute once only.
         """
         spool = self.create_spool(queue, queue_settings)
 
@@ -279,6 +307,8 @@ class SpoolContainer(object):
 
         while not spool.manager._should_stop:
             spool.process()
+            if once_only:
+                break
             sleep(SLEEP_TIME)
 
         spool.cleanup()
@@ -683,7 +713,7 @@ if __name__ == "__main__":
 
         if 'start' in args[0:1]:
             if glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                print "Failed to start - pid files exist"
+                print "Failed to start - pid files exist in %s" % pathjoin(container._base, settings.SPOOLER_PID_BASE)
                 sys.exit(1)
 
             if '-D' not in opts:
