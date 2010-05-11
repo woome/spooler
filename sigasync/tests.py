@@ -29,52 +29,7 @@ from testsupport.contextmanagers import URLOverride
 import sigasync.http
 
 
-class SigasyncQueue(unittest.TestCase):
-    """Basic tests for the SigAsync queue
-
-    These tests illustrate the flexibility of the queue... you can
-    have the asynchronous delivery AND still have synchronous tests.
-    """
-
-    def setUp(self):
-        from django.conf import settings
-        try:
-            self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
-            settings.DISABLE_SIGASYNC_SPOOL = False
-        except AttributeError:
-            pass
-        self.client = Client()
-
-    def tearDown(self):
-        from django.conf import settings
-        try:
-            settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
-        except AttributeError:
-            pass
-
-    def test_queue(self):
-        """Make two related objects, 1 of them via the queued_handler"""
-
-        # Post to a view to cause the objects to be created
-        response1 = self.client.post("/sigasync/v1/")
-        self.assertEquals(response1.status_code, 200)
-        test_obj_1_id = int(response1.content)
-        
-        # Now retrieve the data about the 2nd object which is going to be created by the signal
-        response2 = self.client.get("/sigasync/v2/%d/" % test_obj_1_id)
-        self.assertEquals(response2.status_code, 500)
-        
-        # Now get the queue to process
-        from sigasync.sigasync_spooler import get_spoolqueue
-        spooler = get_spoolqueue('default')
-        spooler.process()
-        
-        # Now try the retrievel again
-        response3 = self.client.get("/sigasync/v2/%d/" % test_obj_1_id)
-        self.assertEquals(response3.status_code, 200)
-        self.assertEquals(int(response3.content), test_obj_1_id)
-
-class SpoolerTest(unittest.TestCase):
+class SpoolerTest(WoomeTestCase):
     
     def test_standard_submit(self):
         """This tests the submit function of the spooler.
@@ -142,49 +97,6 @@ class SpoolerTest(unittest.TestCase):
             except Exception:
                 pass
 
-    def test2(self):
-        """Test the mounted spooler
-        """
-
-
-        spool_name = "test2"
-        try:
-            Spool.create(spool_name)
-        except SpoolExists:
-            pass
-
-        # Make a directory to submit
-        spooler_in_dir = "/tmp/test2_spooler_in"
-        os.makedirs(spooler_in_dir)
-
-        # Create the pre-existing file which the spooler will process
-        submit_filename = pathjoin(spooler_in_dir, "aaaa_spooler_test_file")
-        try:
-            fd = open(submit_filename, "w")
-        except Exception, e:
-            assert False, "test1: the submit file %s could not be created?" % submit_filename
-        else:
-            print >>fd, "hello!"
-        finally:
-            fd.close()
-
-        # Make a spool
-        s=Spool(spool_name, in_spool=spooler_in_dir)
-        # Process with the defaults
-        s.process()
-        # Now assert it's gone to the output
-        dc = [pathjoin(s.get_out_spool(), direntry) for direntry in os.listdir(s.get_out_spool())]
-        try:
-            fd = open(dc[0])
-            content = fd.read()
-        except Exception:
-            assert False, "test1: the processed file didn't arrive"
-        else:
-            assert content == "hello!\n" ## we print it, so it has a newline on the end
-        finally:
-            commands.getstatus("rm -rf %s" % spooler_in_dir)
-            fd.close()
-
     def test_stress(self):
         try:
             rmtree('/tmp/test')
@@ -202,7 +114,7 @@ class SpoolerTest(unittest.TestCase):
         print end - start
         
 
-class MultiprocessingSpoolerTest(unittest.TestCase):
+class MultiprocessingSpoolerTest(WoomeTestCase):
     def setUp(self):
         from django.conf import settings
 
@@ -247,7 +159,7 @@ class MultiprocessingSpoolerTest(unittest.TestCase):
         os.kill(self._container.pid, signal.SIGINT)
         self._container.join()
         rmtree(self._spool_dir)
-        super(self.__class__, self).setUp()
+        super(self.__class__, self).tearDown()
 
 
 # Some sigasync handlers for testing:
@@ -276,7 +188,7 @@ def fail_handler(sender, instance, **kwargs):
     print datetime.now()
     raise Exception("Failing")
 
-class SigAsyncTest(unittest.TestCase):
+class SigAsyncTest(WoomeTestCase):
     def setUp(self):
         from django.conf import settings
         # Cache settings that we're going to change
@@ -323,7 +235,7 @@ class SigAsyncTest(unittest.TestCase):
         os.kill(self._container.pid, signal.SIGINT)
         self._container.join()
         rmtree(self._spool_dir)
-        super(self.__class__, self).setUp()
+        super(self.__class__, self).tearDown()
 
 class MockSpoolQueue(object):
     def __call__(self, spooler):
@@ -343,26 +255,35 @@ class MockSpoolQueue(object):
 
 class SigasyncHttp(WoomeTestCase):
     def test_view_params(self):
+        from sigasync import http
+        oldhandlers = http.SPOOLERHANDLERS
+        http.SPOOLERHANDLERS = {'emailapp.signals.passwordreset_email_handler':'emailhighpri'}
         data = {}
-        def testview(request, spooler):
-            data.update({
-                'spooler': spooler,
-                'data': request.POST.copy(),
-            })
-            from django.http import HttpResponse
-            return HttpResponse('OK')
-        person = self.reg_and_get_person('ht')
-        with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
-            sigasync.http.send(instance=person, sender=Person,
-                handler='emailapp.signals.passwordreset_email_handler',
-                created=True)
-            assert data['spooler'] == 'emailhighpri'
-            assert data['data']['instance'] == str(person.id)
+        try:
+            def testview(request, spooler):
+                data.update({
+                    'spooler': spooler,
+                    'data': request.POST.copy(),
+                })
+                from django.http import HttpResponse
+                return HttpResponse('OK')
+            person = self.reg_and_get_person('ht')
+            with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+                sigasync.http.send(instance=person, sender=Person,
+                    handler='emailapp.signals.passwordreset_email_handler',
+                    created=True)
+                assert data['spooler'] == 'emailhighpri'
+                assert data['data']['instance'] == str(person.id)
+        finally:
+            http.SPOOLERHANDLERS = oldhandlers
 
     def test_submitted_datum(self):
         person = self.reg_and_get_person('ht')
         from sigasync import views
         oldview = views.get_spoolqueue
+        from sigasync import http
+        oldhandlers = http.SPOOLERHANDLERS
+        http.SPOOLERHANDLERS = {'emailapp.signals.passwordreset_email_handler':'emailhighpri'}
         spoolqueue = MockSpoolQueue()
         views.get_spoolqueue = spoolqueue
         try:
@@ -378,6 +299,7 @@ class SigasyncHttp(WoomeTestCase):
             assert len(spoolqueue.spoolqueue) == 1
         finally:
             views.get_spoolqueue = oldview
+            http.SPOOLERHANDLERS = oldhandlers
     
     
     def test_list_submission_in_kwargs(self):
@@ -470,9 +392,24 @@ def mock_getspoolqueue(name):
     """Returns a TestSpooler instance when called."""
     return TestSpooler(name)
 
-class SpoolerTimeoutTestCase(unittest.TestCase):
+class SpoolerTimeoutTestCase(WoomeTestCase):
     def setUp(self):
+        super(SpoolerTimeoutTestCase, self).setUp()
+        from django.conf import settings
+        try:
+            self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
+            settings.DISABLE_SIGASYNC_SPOOL = True
+        except AttributeError:
+            pass
         mockhandler.reset_mock()
+
+    def tearDown(self):
+        from django.conf import settings
+        try:
+            settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        except AttributeError:
+            pass
+        super(SpoolerTimeoutTestCase, self).tearDown()
 
     # patch get_spoolqueue to return our test spooler
     @mock.patch('sigasync.sigasync_handler.get_spoolqueue', mock_getspoolqueue)
