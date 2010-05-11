@@ -351,7 +351,7 @@ class SigasyncHttp(WoomeTestCase):
             })
             from django.http import HttpResponse
             return HttpResponse('OK')
-        person = self.reg_and_get_person('ht')
+        person = self.make_and_get_person('ht')
         with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
             sigasync.http.send(instance=person, sender=Person,
                 handler='emailapp.signals.passwordreset_email_handler',
@@ -360,7 +360,7 @@ class SigasyncHttp(WoomeTestCase):
             assert data['data']['instance'] == str(person.id)
 
     def test_submitted_datum(self):
-        person = self.reg_and_get_person('ht')
+        person = self.make_and_get_person('ht')
         from sigasync import views
         oldview = views.get_spoolqueue
         spoolqueue = MockSpoolQueue()
@@ -412,7 +412,7 @@ class SigasyncHttp(WoomeTestCase):
                 })
                 from django.http import HttpResponse
                 return HttpResponse('OK')
-            person = self.reg_and_get_person('ht')
+            person = self.make_and_get_person('ht')
             with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
                 test_signal.send(instance=person, sender=Person)
                 assert data['spooler'] == 'test'
