@@ -42,6 +42,7 @@ class SpoolManager(object):
     def __init__(self):
         self.spool = None
         self._should_stop = False
+        self.logger = logging.getLogger("sigasync.spooler.SpoolManager")
 
     def stop(self, spool):
         self._should_stop = True
@@ -59,9 +60,8 @@ class SpoolManager(object):
 
     def created_processing(self, spool, processing):
         """Notify that the processing directory has been created."""
-        logger = logging.getLogger("sigasync.spooler.SpoolManager")
-        logger.info("Created processing dir %s" % processing, extra={'pid': os.getpid()})
-        pass
+        self.logger.info("Created processing dir %s"
+                          % processing, extra={'pid': os.getpid()})
 
     def processed_entry(self, spool, entry):
         """Notify that an entry has been successfully processed."""
@@ -84,6 +84,7 @@ class SpoolContainer(object):
     Contains the spools, manages processes, etc."""
     
     def __init__(self, manager=SpoolManager, directory=None):
+        self.logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         self._children = set()
         self._base = directory
         self._should_exit = False
@@ -100,7 +101,6 @@ class SpoolContainer(object):
     def _read_config(self):
         """Pull data from config into local data structures."""
         from django.conf import settings
-        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         # Allow base directory to be overridden (useful for testing)
         if self._base is None:
             self._base = settings.SPOOLER_DIRECTORY
@@ -110,13 +110,13 @@ class SpoolContainer(object):
         try:
             queues = settings.SPOOLER_SPOOLS_ENABLED
         except AttributeError:
-            logger.warning("SPOOLER_SPOOLS_ENABLED is not defined, "
-                           "running all by default.")
+            self.logger.warning("SPOOLER_SPOOLS_ENABLED is not defined, "
+                                "running all by default.")
             queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
         if not queues:
-            logger.error("No spools enabled.")
+            self.logger.error("No spools enabled.")
             raise ConfigurationError("No spools enabled.")
-        logger.info("Running spools for: %s", ', '.join(queues))
+        self.logger.info("Running spools for: %s", ', '.join(queues))
 
         qdict = {}
         defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
@@ -158,7 +158,6 @@ class SpoolContainer(object):
                 self._start_spool(queue)
 
     def _start_spool(self, queue):
-        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         container=self
         class DebugProcess(object):
             def __init__(self, group=None, target=None, name="", args=[], kwargs={}):
@@ -192,23 +191,22 @@ class SpoolContainer(object):
         process.start()
         self._queues[queue]['procs'].append(process)
         self._children.add(process)
-        logger.info("Started spool process %s for %s queue."
-                     % (process.pid, queue))
+        self.logger.info("Started spool process %s for %s queue."
+                          % (process.pid, queue))
         return process
 
     def _adjust_spool(self, queue):
-        logger = logging.getLogger("sigasync.spooler.SpoolContainer._adjust_spool")
         qd = self._queues[queue]
         try:
             entries = len(os.listdir(qd['incoming']))
         except OSError, e:
-            logger.error("Error opening %s: %s" % (qd['incoming'], e))
+            self.logger.error("Error opening %s: %s" % (qd['incoming'], e))
             return
         if entries > 100 and qd['nprocs'] < qd['maxprocs']:
-            logger.info("Spawning new process for %s" % queue)
+            self.logger.info("Spawning new process for %s" % queue)
             qd['nprocs'] += 1
         elif entries < 50 and qd['nprocs'] > qd['minprocs']:
-            logger.info("Removing process for %s" % queue)
+            self.logger.info("Removing process for %s" % queue)
             qd['nprocs'] -= 1
 
     def _write_pid(self):
@@ -219,11 +217,10 @@ class SpoolContainer(object):
         try:
             os.unlink(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
         except Exception, e:
-            logging.getLogger("Spool").warning(
+            self.logger.warning(
                     "Failed to remove pidfile %s%s.pid" % (self._pid_base, os.getpid()))
 
     def run(self):
-        logger = logging.getLogger("sigasync.spooler.SpoolContainer.run")
         self._start_spools()
         self._write_pid()
         atexit.register(self._remove_pid)
@@ -238,10 +235,10 @@ class SpoolContainer(object):
                 for p in procs[:]:
                     if not p.is_alive():
                         if p.exitcode > 0:
-                            logger.warning("Spool %s-%s exited with code %s"
+                            self.logger.warning("Spool %s-%s exited with code %s"
                                     % (queue, p.pid, p.exitcode))
                         elif p.exitcode < 0:
-                            logger.warning("Spool %s-%s was killed by signal %s"
+                            self.logger.warning("Spool %s-%s was killed by signal %s"
                                     % (queue, p.pid, -1 * p.exitcode))
                         procs.remove(p)
                         self._children.remove(p)
@@ -260,7 +257,7 @@ class SpoolContainer(object):
             sleep(SLEEP_TIME)
 
         # Clean up
-        logger.info("Shutting down child processes...")
+        self.logger.info("Shutting down child processes...")
         for p in self._children:
             try:
                 os.kill(p.pid, signal.SIGINT)
@@ -271,8 +268,7 @@ class SpoolContainer(object):
             p.join()
 
     def exit(self, sig, frame):
-        logger = logging.getLogger("sigasync.spooler.SpoolContainer")
-        logger.info("Shutting down spooler...")
+        self.logger.info("Shutting down spooler...")
         self._should_exit = True
 
     def create_spool(self, queue, queue_settings, spool_class=None):
@@ -300,8 +296,7 @@ class SpoolContainer(object):
         spool = self.create_spool(queue, queue_settings)
 
         def _exit(sig, frame):
-            logger = logging.getLogger("sigasync.spooler.SpoolContainer")
-            logger.info("Shutting down spooler %s-%s" % (queue, os.getpid()))
+            self.logger.info("Shutting down spooler %s-%s" % (queue, os.getpid()))
             spool.manager.stop(spool)
         signal.signal(signal.SIGINT, _exit)
 
@@ -424,12 +419,13 @@ class Spool(object):
         self._shard_in = shard_in
         self._shard_out = shard_out
 
+        self.logger.debug("Initializing spool in %s with %s %s %s" 
+            % (self._base, self._in, self._out, self._failed))
         # Ensure the directories are there
         for p in [self._in,
                   self._out,
                   self._processing_base,
                   self._failed]:
-            self.logger.debug("checking %s" % p)
             if not pathexists(p):
                 try:
                     os.makedirs(p)
@@ -473,14 +469,13 @@ class Spool(object):
     # Helper and instance methods
 
     def _remove_processing_dir(self):
-        logger = logging.getLogger("sigasync.spooler.Spool._remove_processing_dir")
         try:
             os.rmdir(self._processing)
         except OSError, e:
-            logger.warning("Failed to remove dir %s: %s" %
+            self.logger.warning("Failed to remove dir %s: %s" %
                     (self._processing, e))
         else:
-            logger.info("Removed processing dir %s" % self._processing)
+            self.logger.info("Removed processing dir %s" % self._processing)
 
     def _move_to(self, entry, dir):
         """Move an entry to the target directory.
@@ -587,7 +582,7 @@ class Spool(object):
         it is self.execute
 
         """
-        logger = logging.getLogger("sigasync.spooler.Spool.process")
+        logger = self.logger
         if function is None:
             function = self.execute
 

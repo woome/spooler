@@ -5,17 +5,15 @@ try:
     import simplejson
 except ImportError, e:
     from django.utils import simplejson
-from sigasync_spooler import get_spoolqueue
 
 import logging
 from django.conf import settings
 
+from sigasync.sigasync_spooler import get_spoolqueue, enqueue_datum
 from sigasync import http
 
 def sigasync_handler(func, spooler='default', timeout=None):
     logger = logging.getLogger("sigasync.sigasync_handler")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("called")
 
     if spooler in settings.SPOOLER_VIA_HTTP:
         def httpsend(instance, sender, *args, **kwargs):
@@ -24,8 +22,6 @@ def sigasync_handler(func, spooler='default', timeout=None):
 
     def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
         logger = logging.getLogger("sigasync.sigasync_handler.continuation")
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("called")
         
         # We only allow simple types
         # This is from our original PGQ based transport.
@@ -35,12 +31,13 @@ def sigasync_handler(func, spooler='default', timeout=None):
 
         # Make a datum
         from urllib import urlencode
-        data = { 
+        data = {
             "func_name": func.__name__,
             "func_module": func.__module__,
-            "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) if not sender is None else 'None',
+            "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) \
+                if sender is not None else 'None',
             "instance": instance.id if instance else None,
-            "created": { 
+            "created": {
                 True: "1",
                 False: "0"
                 }.get(created, "0"),
@@ -52,10 +49,12 @@ def sigasync_handler(func, spooler='default', timeout=None):
             data['timeout'] = timeout
 
         # Submit to the spooler
-        spoolqueue = get_spoolqueue(spooler)
-        spoolqueue.submit_datum(urlencode(data))
         if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+            spoolqueue = get_spoolqueue(spooler)
+            spoolqueue.submit_datum(urlencode(data))
             spoolqueue.process()
+        else:
+            enqueue_datum(urlencode(data), spooler)
         
     return continuation
 

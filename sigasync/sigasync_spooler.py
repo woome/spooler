@@ -2,6 +2,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from collections import deque
 try:
     import simplejson
 except ImportError, e:
@@ -26,6 +27,50 @@ def _get_queue_name(name):
 def get_spoolqueue(name):
     qname = _get_queue_name(name)
     return SigAsyncSpool(qname, directory=settings.SPOOLER_DIRECTORY)
+
+def _get_transaction_queue():
+    """Get the queue of entries waiting for a transaction to finish."""
+    if not hasattr(settings.THREADLOCAL, 'sigasync_transaction_queue'):
+        settings.THREADLOCAL.sigasync_transaction_queue = deque()
+    return settings.THREADLOCAL.sigasync_transaction_queue
+
+def _clear_transaction_queue():
+    settings.THREADLOCAL.sigasync_transaction_queue = []
+
+def enqueue_datum(datum, spooler):
+    """Add datum to the queue for spooler.
+
+    If there is a transaction open it will be held in a secondary queue. It
+    will be sent to the spool queue on commit or discarded on rollback.
+
+    """
+    logger = logging.getLogger("sigasync.sigasync_spooler")
+    if transaction.is_managed():
+        queue = _get_transaction_queue()
+        queue.append((spooler, datum))
+        logger.debug("Holding spooler job for %s" % spooler)
+    else:
+        get_spoolqueue(spooler).submit_datum(datum)
+
+def handle_commit(sender, **kwargs):
+    """Signal handler to flush the transaction queue on a commit."""
+    logger = logging.getLogger("sigasync.sigasync_spooler")
+    queue = _get_transaction_queue()
+    while queue:
+        spooler, datum = queue.popleft()
+        spool = get_spoolqueue(spooler)
+        spool.submit_datum(datum)
+        logger.debug("Running spooler job for %s on commit" % spooler)
+        if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+            spool.process()
+
+def handle_rollback(sender, **kwargs):
+    """Signal handler to clear the transaction queue on a rollback."""
+    logger = logging.getLogger("sigasync.sigasync_spooler")
+    queue = _get_transaction_queue()
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Discarding %d jobs due to rollback" % len(queue))
+    queue.clear()
 
 
 class SigAsyncManager(SpoolManager):
