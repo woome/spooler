@@ -1,19 +1,19 @@
 import os
 import sys
 import time
+import logging
+import threading
 from datetime import datetime, timedelta
 from collections import deque
+from urllib import urlencode
 try:
     import simplejson
 except ImportError, e:
     from django.utils import simplejson
 from django.conf import settings
-from django.db import models
-from django.db import transaction
-from spooler import Spool, SpoolContainer, SpoolManager
-from spooler import FailError
-import logging
+from django.db import models, transaction
 from testsupport.contextmanagers import SettingsOverride
+from sigasync.spooler import Spool, SpoolContainer, SpoolManager, FailError
 
 def _get_queue_name(name):
     map = settings.SPOOLER_QUEUE_MAPPINGS
@@ -25,17 +25,21 @@ def _get_queue_name(name):
         return settings.DEFAULT_SPOOLER_QUEUE_NAME
 
 def get_spoolqueue(name):
+    from sigasync.http import HttpSpool
     qname = _get_queue_name(name)
-    return SigAsyncSpool(qname, directory=settings.SPOOLER_DIRECTORY)
+    if name in settings.SPOOLER_VIA_HTTP:
+        qclass = HttpSpool
+    else:
+        qclass = SigAsyncSpool
+    return qclass(qname, directory=settings.SPOOLER_DIRECTORY)
+
+_local = threading.local()
 
 def _get_transaction_queue():
     """Get the queue of entries waiting for a transaction to finish."""
-    if not hasattr(settings.THREADLOCAL, 'sigasync_transaction_queue'):
-        settings.THREADLOCAL.sigasync_transaction_queue = deque()
-    return settings.THREADLOCAL.sigasync_transaction_queue
-
-def _clear_transaction_queue():
-    settings.THREADLOCAL.sigasync_transaction_queue = []
+    if not hasattr(_local, 'queue'):
+        _local.queue = deque()
+    return _local.queue
 
 def enqueue_datum(datum, spooler):
     """Add datum to the queue for spooler.
@@ -50,16 +54,16 @@ def enqueue_datum(datum, spooler):
         queue.append((spooler, datum))
         logger.debug("Holding spooler job for %s" % spooler)
     else:
-        get_spoolqueue(spooler).submit_datum(datum)
+        get_spoolqueue(spooler).submit(datum)
 
 def handle_commit(sender, **kwargs):
     """Signal handler to flush the transaction queue on a commit."""
     logger = logging.getLogger("sigasync.sigasync_spooler")
     queue = _get_transaction_queue()
     while queue:
-        spooler, datum = queue.popleft()
+        spooler, message = queue.popleft()
         spool = get_spoolqueue(spooler)
-        spool.submit_datum(datum)
+        spool.submit(message)
         logger.debug("Running spooler job for %s on commit" % spooler)
         if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
             spool.process()
@@ -121,11 +125,11 @@ class SigAsyncSpool(Spool):
 
         super(SigAsyncSpool, self).__init__(name, manager=manager, **kwargs)
         self.close_transaction_after_execute = False
-        try:
-            if settings.DISABLE_SIGASYNC_SPOOL:
-                self._processing = self._processing_base
-        except AttributeError:
-            pass
+        if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+            self._processing = self._processing_base
+
+    def submit(self, spec):
+        self._submit_datum(urlencode(spec))
 
     def execute(self, processing_entry):
         logger = logging.getLogger("sigasync.sigasync_spooler.execute")
@@ -173,13 +177,8 @@ class SigAsyncSpool(Spool):
                     raise FailError("%s with id %s not found" %
                                        (model, data['instance']))
 
-            created = {
-                "1": True,
-                "0": False
-                }.get(data["created"], "0")
             data["sender"] = model
             data["instance"] = instance
-            data["created"] = created
             if 'kwargs' in data:
                 kw = simplejson.loads(data['kwargs'])
                 if isinstance(kw, dict):

@@ -63,6 +63,10 @@ class SpoolManager(object):
         self.logger.info("Created processing dir %s"
                           % processing, extra={'pid': os.getpid()})
 
+    def submitted_entry(self, spool, entry):
+        """Notify that an entry has been successfully submitted."""
+        pass
+
     def processed_entry(self, spool, entry):
         """Notify that an entry has been successfully processed."""
         pass
@@ -90,7 +94,8 @@ class SpoolContainer(object):
         self._should_exit = False
         self._last_adjusted = datetime.now()
 
-        if isinstance(manager, type):
+        self._manager = manager
+        if callable(manager):
             self.manager = manager()
         else:
             self.manager = manager
@@ -275,6 +280,7 @@ class SpoolContainer(object):
         if spool_class is None:
             spool_class = Spool
         spool = spool_class(queue,
+                            manager=self._manager,
                             directory=self._base,
                             in_spool=queue_settings['incoming'],
                             out_spool=queue_settings['outgoing'],
@@ -366,7 +372,7 @@ class Spool(object):
     """
 
     def __init__(self, name,
-                 manager=None,
+                 manager=SpoolManager,
                  directory="/tmp",
                  in_spool=None,
                  out_spool=None,
@@ -403,8 +409,8 @@ class Spool(object):
         """
         self.logger = logging.getLogger("sigasync.spooler.Spool")
 
-        if manager is None:
-            self.manager = SpoolManager()
+        if callable(manager):
+            self.manager = manager()
         else:
             self.manager = manager
 
@@ -520,7 +526,7 @@ class Spool(object):
                               os.getpid())
         return tempfile.mktemp(prefix=pre, dir=self._in)
 
-    def submit_datum(self, datum):
+    def _submit_datum(self, datum):
         """Submit the datum to the spooler without having to worry about filenames.
 
         This just does the creation of the file on the user's behalf.  The
@@ -533,9 +539,9 @@ class Spool(object):
         finally:
             os.close(tmpfd)
 
-        self.submit(tmpfname, mv=True)
+        self._submit_file(tmpfname, mv=True)
 
-    def submit(self, filename, mv=False):
+    def _submit_file(self, filename, mv=False):
         """Push the file into the spooler's queue.
 
         If 'mv' is set True then filename is removed from it's src
@@ -547,6 +553,7 @@ class Spool(object):
             os.rename(filename, target_name)
         else:
             os.symlink(filename, target_name)
+        self.manager.submitted_entry(self, target_name)
 
     def _incoming(self):
         """Yield an iterator over incoming file entries."""
