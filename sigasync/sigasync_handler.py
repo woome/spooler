@@ -1,62 +1,44 @@
 """Send signals over an asynchronous delivery mechanism"""
 import time
+import logging
+from functools import partial
 
 try:
     import simplejson
 except ImportError, e:
     from django.utils import simplejson
-from sigasync_spooler import get_spoolqueue
 
-import logging
 from django.conf import settings
 
+from sigasync.sigasync_spooler import get_spoolqueue, enqueue_datum
 from sigasync import http
 
 def sigasync_handler(func, spooler='default', timeout=None):
-    logger = logging.getLogger("sigasync.sigasync_handler")
-    if logger.isEnabledFor(logging.DEBUG):
-        logger.debug("called")
+    return partial(send_async, func, spooler, timeout=timeout)
 
-    if spooler in settings.SPOOLER_VIA_HTTP:
-        def httpsend(instance, sender, *args, **kwargs):
-            http.send_handler(spooler, func, instance, sender, *args, **kwargs)
-        return httpsend
+def send_async(func, spooler, sender, instance=None, timeout=None, signal=None, **kwargs):
+    # raises a ValueError if the kwargs cannot be encoded to json
+    kwargs_data = simplejson.dumps(kwargs)
 
-    def continuation(sender, instance, created=False, signal=None, *args, **kwargs):
-        logger = logging.getLogger("sigasync.sigasync_handler.continuation")
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug("called")
-        
-        # We only allow simple types
-        # This is from our original PGQ based transport.
+    # Make a datum
+    data = {
+        "func_name": func.__name__,
+        "func_module": func.__module__,
+        "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) \
+            if sender is not None else 'None',
+        "instance": instance.id if instance else None,
+        "kwargs": kwargs_data,
+        "create_time": time.time(),
+        "spooler": spooler,
+    }
+    if timeout:
+        data['timeout'] = timeout
 
-        # raises a ValueError if the kwargs cannot be encoded to json
-        kwargs_data = simplejson.dumps(kwargs)
-
-        # Make a datum
-        from urllib import urlencode
-        data = { 
-            "func_name": func.__name__,
-            "func_module": func.__module__,
-            "sender": "%s__%s" % (sender._meta.app_label, sender.__name__) if not sender is None else 'None',
-            "instance": instance.id if instance else None,
-            "created": { 
-                True: "1",
-                False: "0"
-                }.get(created, "0"),
-            "kwargs": kwargs_data,
-            "create_time": time.time(),
-            "spooler": spooler,
-        }
-        if timeout:
-            data['timeout'] = timeout
-
-        # Submit to the spooler
+    if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
         spoolqueue = get_spoolqueue(spooler)
-        spoolqueue.submit_datum(urlencode(data))
-        if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
-            spoolqueue.process()
-        
-    return continuation
+        spoolqueue.submit(data)
+        spoolqueue.process()
+    else:
+        enqueue_datum(data, spooler)
 
 # End
