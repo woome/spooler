@@ -11,7 +11,7 @@ try:
 except ImportError, e:
     from django.utils import simplejson
 from django.conf import settings
-from django.db import models, transaction
+from django.db import models, connection, transaction
 from testsupport.contextmanagers import SettingsOverride
 from sigasync.spooler import Spool, SpoolContainer, SpoolManager, FailError
 
@@ -155,6 +155,16 @@ class SigAsyncSpool(Spool):
                      create_time, timeout))
                     return
 
+            if 'affinity' in data:
+                affinity = simplejson.loads(data['affinity'])
+                for k,v in affinity.copy().iteritems():
+                    affinity[k] = datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
+
+                if not getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
+                    try:
+                        connection.mapper._affinity = affinity
+                    except AttributeError:
+                        pass
 
             # Get the func
             func_name = data["func_name"]

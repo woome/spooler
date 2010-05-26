@@ -16,6 +16,7 @@ from Queue import Empty
 from multiprocessing import Process, Queue
 from time import sleep, time
 from datetime import datetime
+import logging
 import pprint
 
 from django.dispatch.dispatcher import Signal
@@ -267,6 +268,16 @@ class SigAsyncTest(SpoolerTestCase):
         except AttributeError:
             pass
 
+    def tearDown(self):
+        from django.conf import settings
+        # Restore settings
+        try:
+            settings.DISABLE_SIGASYNC_SPOOL = self._disable_sigasync_spool_saved
+        except AttributeError:
+            pass
+
+        super(self.__class__, self).tearDown()
+
     def test_submit(self):
         self.manager = TestSpoolManager()
         sc = SigAsyncContainer(manager=self.manager)
@@ -325,6 +336,32 @@ class SigAsyncTest(SpoolerTestCase):
             sigasync_handler.get_spoolqueue = oldview
             views.get_spoolqueue = oldview
 
+def check_affinity(sender, table=None, **kwargs):
+    assert table is not None
+    from django.db import connection
+    assert connection.mapper._has_affinity(table)
+
+class MPSigAsyncTest(SpoolerTestCase):
+    """Multiprocessing SigAsync tests
+
+    This class manages launching the separate sigasync process and
+    communicating with it.
+
+    """
+    def setUp(self):
+        super(self.__class__, self).setUp()
+        from django.conf import settings
+        try:
+            self._disable_sigasync_spool_saved = settings.DISABLE_SIGASYNC_SPOOL
+            settings.DISABLE_SIGASYNC_SPOOL = False
+        except AttributeError:
+            pass
+
+        self.manager = TestSpoolManager()
+        sc = SigAsyncContainer(manager=self.manager)
+        self._container = Process(target=sc.run, args=())
+        self._container.start()
+
     def tearDown(self):
         from django.conf import settings
         # Restore settings
@@ -333,7 +370,40 @@ class SigAsyncTest(SpoolerTestCase):
         except AttributeError:
             pass
 
+        os.kill(self._container.pid, signal.SIGINT)
+        self._container.join()
+
         super(self.__class__, self).tearDown()
+
+    def wait_for_job(self, timeout=1):
+        """Waits for a job to finish, raises an AssertionError if it fails or times out"""
+        try:
+            self.manager._processed.get(timeout=1)
+        except Empty:
+            try:
+                (s, f) = self.manager._failed.get_nowait()
+            except Empty:
+                raise AssertionError, "Timed out waiting for entry to process."
+            else:
+                raise AssertionError, "Async process failed, see log for reason."
+
+    def test_affinity_passed_to_spooler(self):
+        logger = logging.getLogger('sigasync.tests.test_affinity_passed_to_spooler')
+        from django.db import connection
+        if not hasattr(connection, 'mapper'):
+            logger.warning('MDB backend required for affinity test')
+            return
+
+        # Set regular affinity
+        table = 'test1230487'
+        connection.mapper._set_affinity(table)
+        assert connection.mapper._has_affinity(table)
+
+        # Run a spool job
+        send_async(check_affinity, 'test', sender=None, table=table)
+        # Wait for it to finish
+        # This will raise an error if the job fails
+        self.wait_for_job()
 
 class SigasyncHttp(SpoolerTestCase):
     def test_view_params(self):

@@ -3,11 +3,10 @@ import time
 import logging
 from functools import partial
 
-try:
-    import simplejson
-except ImportError, e:
-    from django.utils import simplejson
+from django.utils import simplejson
+from django.core.serializers.json import DjangoJSONEncoder
 
+from django.db import connection
 from django.conf import settings
 
 from sigasync.sigasync_spooler import get_spoolqueue, enqueue_datum
@@ -18,7 +17,7 @@ def sigasync_handler(func, spooler='default', timeout=None):
 
 def send_async(func, spooler, sender, instance=None, timeout=None, signal=None, **kwargs):
     # raises a ValueError if the kwargs cannot be encoded to json
-    kwargs_data = simplejson.dumps(kwargs)
+    kwargs_data = simplejson.dumps(kwargs, cls=DjangoJSONEncoder)
 
     # Make a datum
     data = {
@@ -33,6 +32,9 @@ def send_async(func, spooler, sender, instance=None, timeout=None, signal=None, 
     }
     if timeout:
         data['timeout'] = timeout
+
+    if hasattr(connection, 'mapper'):
+        data['affinity'] = simplejson.dumps(connection.mapper._affinity, cls=DjangoJSONEncoder)
 
     if getattr(settings, 'DISABLE_SIGASYNC_SPOOL', False):
         spoolqueue = get_spoolqueue(spooler)
