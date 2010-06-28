@@ -171,6 +171,7 @@ class SigAsyncSpool(Spool):
             func_module = data["func_module"]
             
             function_object = {}
+            logger.debug("calling: import %s ; func_obj=%s.%s" % (func_module, func_module, func_name))
             exec "import %s ; func_obj=%s.%s" % (func_module, func_module, func_name) in function_object
             del data["func_name"]
             del data["func_module"]
