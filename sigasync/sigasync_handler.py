@@ -16,6 +16,10 @@ def sigasync_handler(func, spooler='default', timeout=None):
     return partial(send_async, func, spooler, timeout=timeout)
 
 def send_async(func, spooler, sender, instance=None, timeout=None, signal=None, **kwargs):
+    
+    # persists modified_attrs if available for async signal handler
+    if getattr(instance, '_modified_attrs_were', None):
+        kwargs['_modified_attrs'] = instance._modified_attrs_were
     # raises a ValueError if the kwargs cannot be encoded to json
     kwargs_data = simplejson.dumps(kwargs, cls=DjangoJSONEncoder)
 
