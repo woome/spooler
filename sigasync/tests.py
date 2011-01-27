@@ -160,6 +160,11 @@ class ShardedSpoolerTestCase(SpoolerTestCase):
             content = fd.read()
         self.assertEqual(content, "test_processed")
 
+    def test_shard_detection(self):
+        s1 = Spool("test", directory=self._spool_dir, shard=True)
+        s2 = Spool("test", directory=self._spool_dir, shard=False)
+        self.assertTrue(s2._sharded)
+
 
 class TestSpoolManager(SpoolManager):
     """Spooler Manager implementing IPC for testing"""
