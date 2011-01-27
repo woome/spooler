@@ -444,7 +444,15 @@ class Spool(object):
                 self._processing_base,
                 self._failed]
 
-        #XXX check if already sharded
+        if not self._sharded:
+            # check for existing shard store
+            if any(path.exists(path.join(p, SHARD_DIR))
+                   for p in (self._in, self._out)):
+                self._sharded = True
+                self.logger.info(
+                    "Found sharded spool in %s, running in sharded mode",
+                    self._base)
+
         if self._sharded:
             dirs.extend([path.join(self._in, SHARD_DIR),
                          path.join(self._out, SHARD_DIR),
