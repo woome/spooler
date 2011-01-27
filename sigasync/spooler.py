@@ -6,14 +6,13 @@
 from __future__ import with_statement
 import os
 import sys
+import errno
 import tempfile
 import signal
 import atexit
 import glob
 import logging
-from os.path import join as pathjoin
-from os.path import exists as pathexists
-from os.path import basename, dirname
+from os import path
 from time import sleep
 from datetime import datetime, timedelta
 from multiprocessing import Process
@@ -126,13 +125,13 @@ class SpoolContainer(object):
         qdict = {}
         defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
         for queue in queues:
-            queue_dir = pathjoin(self._base, queue)
+            queue_dir = path.join(self._base, queue)
             qconf = defaults.copy()
             qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
 
-            in_, out = [pathjoin(queue_dir, d) for d in ['in', 'out']]
+            in_, out = [path.join(queue_dir, d) for d in ['in', 'out']]
             retries = sorted(set(qconf.get('retries', [15, 60])))
-            fail_dirs = [pathjoin(queue_dir, d) for d in
+            fail_dirs = [path.join(queue_dir, d) for d in
                             ['retry%d' % t for t in retries] + ['failed']]
             qdict[queue] = {'incoming': in_,
                             'outgoing': out,
@@ -215,12 +214,12 @@ class SpoolContainer(object):
             qd['nprocs'] -= 1
 
     def _write_pid(self):
-        with open(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
+        with open(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
             f.write("%s" % os.getpid())
 
     def _remove_pid(self):
         try:
-            os.unlink(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
+            os.unlink(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
         except Exception, e:
             self.logger.warning(
                     "Failed to remove pidfile %s%s.pid" % (self._pid_base, os.getpid()))
@@ -415,12 +414,12 @@ class Spool(object):
             self.manager = manager
 
         self._name = name
-        self._base = pathjoin(directory, name)
-        self._in = in_spool or pathjoin(self._base, "in")
-        self._out = out_spool or pathjoin(self._base, "out")
-        self._failed = failed_spool or pathjoin(self._base, "failed")
+        self._base = path.join(directory, name)
+        self._in = in_spool or path.join(self._base, "in")
+        self._out = out_spool or path.join(self._base, "out")
+        self._failed = failed_spool or path.join(self._base, "failed")
 
-        self._processing_base = pathjoin(self._base, "processing")
+        self._processing_base = path.join(self._base, "processing")
         self._entry_filter = entry_filter
         self._shard_in = shard_in
         self._shard_out = shard_out
@@ -432,11 +431,11 @@ class Spool(object):
                   self._out,
                   self._processing_base,
                   self._failed]:
-            if not pathexists(p):
+            if not path.exists(p):
                 try:
                     os.makedirs(p)
                 except OSError, e:
-                    if pathexists(p):
+                    if path.exists(p):
                         # Another process must have created the directory
                         pass
                     else:
@@ -493,7 +492,7 @@ class Spool(object):
         Returns the new path of the entry on success.
 
         """
-        target = pathjoin(dir, basename(entry))
+        target = path.join(dir, path.basename(entry))
         os.rename(entry, target)
         return target
 
@@ -560,13 +559,13 @@ class Spool(object):
         try:
             entries = os.listdir(self._in)
         except OSError, e:
-            if e.errno == 22:
-                # HFS+ sometimes returns errno 22 EINVAL from readdir
+            if e.errno == errno.EINVAL:
+                # HFS+ sometimes returns EINVAL from readdir
                 # after renaming files, so just retry on the next loop
                 return
             else:
                 raise e
-        entries = [pathjoin(self._in, e) for e in entries]
+        entries = [path.join(self._in, e) for e in entries]
         entries = filter(self._entry_filter, entries)
         for entry in entries:
             yield entry
@@ -601,8 +600,7 @@ class Spool(object):
             try:
                 processing_entry = self._move_to_processing(entry)
             except OSError, e:
-                if e.errno == 2:
-                    # '[Errno 2] No such file or directory'
+                if e.errno == errno.ENOENT:
                     # The file was moved, probably by another spool process
                     pass
                 else:
@@ -715,7 +713,7 @@ if __name__ == "__main__":
 
         if 'start' in args[0:1]:
             if glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                print "Failed to start - pid files exist in %s" % pathjoin(container._base, settings.SPOOLER_PID_BASE)
+                print "Failed to start - pid files exist in %s" % path.join(container._base, settings.SPOOLER_PID_BASE)
                 sys.exit(1)
 
             if '-D' not in opts:
@@ -724,12 +722,12 @@ if __name__ == "__main__":
 
         elif 'stop' in args[0:1]:
             for f in glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                with open(pathjoin(container._base, f)) as fh:
+                with open(path.join(container._base, f)) as fh:
                     pid = fh.read()
                 try:
                     os.kill(int(pid), signal.SIGINT)
                     # Succesfull kill so remove the pid file
-                    os.remove(pathjoin(container._base, f))
+                    os.remove(path.join(container._base, f))
                     print "Killing process %s." % pid
                 except OSError, e:
                     print "Failed to kill process %s: %s" % (pid, e)
