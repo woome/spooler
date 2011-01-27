@@ -24,6 +24,12 @@ def _get_queue_name(name):
     else:
         return settings.DEFAULT_SPOOLER_QUEUE_NAME
 
+def get_spool_conf(queue):
+    defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
+    qconf = defaults.copy()
+    qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
+    return qconf
+
 def get_spoolqueue(name):
     from sigasync.http import HttpSpool
     qname = _get_queue_name(name)
@@ -31,7 +37,9 @@ def get_spoolqueue(name):
         qclass = HttpSpool
     else:
         qclass = SigAsyncSpool
-    return qclass(qname, directory=settings.SPOOLER_DIRECTORY)
+    qconf = get_spool_conf(qname)
+    return qclass(qname, directory=settings.SPOOLER_DIRECTORY,
+                  shard=qconf.get('shard', False))
 
 _local = threading.local()
 
