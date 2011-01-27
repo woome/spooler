@@ -165,6 +165,37 @@ class ShardedSpoolerTestCase(SpoolerTestCase):
         s2 = Spool("test", directory=self._spool_dir, shard=False)
         self.assertTrue(s2._sharded)
 
+    def test_shard_cleanup(self):
+        from sigasync import spooler
+        _oldtime = time() - spooler.SHARD_SECONDS - 10
+        def oldtime():
+            return _oldtime
+        _time = spooler.time
+        spooler.time = oldtime
+        try:
+            s = Spool("test", directory=self._spool_dir, shard=True)
+            s._submit_datum("test1")
+            spooler.time = _time
+            s._submit_datum("test2")
+            shards = s._shards(s._in)
+            self.assertEqual(len(shards), 2)
+            self.assertEqual(len(os.listdir(shards[0])), 1)
+            self.assertEqual(len(os.listdir(shards[1])), 1)
+            s.process()
+            s.process()
+            shards = s._shards(s._in)
+            self.assertEqual(len(shards), 2)
+            self.assertEqual(len(os.listdir(shards[0])), 0)
+            self.assertEqual(len(os.listdir(shards[1])), 0)
+            oldshard = shards[0]
+            # Update mtime to far enough in the past
+            os.utime(oldshard, (_oldtime, _oldtime))
+            s.process()
+            self.assertFalse(oldshard in s._shards(s._in),
+                "Old empty shard didn't get cleaned up")
+        finally:
+            spooler.time = _time
+
 
 class TestSpoolManager(SpoolManager):
     """Spooler Manager implementing IPC for testing"""

@@ -530,7 +530,7 @@ class Spool(object):
         # submitting.
         for attempt in [0, 1]:
             # get shard dir and create if necessary
-            shard = path.join(target_dir, SHARD_DIR, self._get_current_shard())
+            shard = self._get_current_shard(target_dir)
             target = path.join(shard, path.basename(entry))
             try:
                 os.makedirs(shard)
@@ -629,7 +629,7 @@ class Spool(object):
         # submitting.
         for attempt in [0, 1]:
             # get shard dir and create if necessary
-            shard = path.join(self._in, SHARD_DIR, self._get_current_shard())
+            shard = self._get_current_shard(self._in)
             try:
                 os.makedirs(shard)
             except OSError, e:
@@ -675,13 +675,28 @@ class Spool(object):
             entries = sorted(os.listdir(shard))
             if entries:
                 return (path.join(shard, e) for e in entries)
+            elif shard < self._get_current_shard(self._in):
+                # Shard appears empty and older than the current shard
+                # Try to remove it if it hasn't been modified recently
+                try:
+                    st = os.stat(shard)
+                    if time() - st.st_mtime > SHARD_SECONDS:
+                        try:
+                            os.rmdir(shard)
+                        except OSError, err:
+                            if err.errno != errno.ENOTEMPTY:
+                                raise
+                except OSError, err:
+                    if err.errno != errno.ENOENT:
+                        raise
         return []
 
     def _shards(self, base):
         return sorted(glob.glob(path.join(base, SHARD_DIR, SHARD_PREFIX+'*')))
 
-    def _get_current_shard(self):
-        return SHARD_PREFIX + str(int(time() / SHARD_SECONDS) * SHARD_SECONDS)
+    def _get_current_shard(self, base):
+        return path.join(base, SHARD_DIR, SHARD_PREFIX +
+                         str(int(time() / SHARD_SECONDS) * SHARD_SECONDS))
 
     def process(self, function=None):
         """Process the spool.
