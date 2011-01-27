@@ -38,7 +38,7 @@ class SpoolerTestCase(WoomeTestCase):
     def setUp(self):
         super(SpoolerTestCase, self).setUp()
         self._spool_dir = tempfile.mkdtemp(prefix="testspooler_", dir="/tmp")
-        self._override = SettingsOverride(
+        self.__override = SettingsOverride(
             DISABLE_SIGASYNC_SPOOL = True,
             SPOOLER_QUEUE_MAPPINGS = {
                 'default': 'default',
@@ -52,10 +52,10 @@ class SpoolerTestCase(WoomeTestCase):
             SPOOLER_TEST = {},
             SPOOLER_VIA_HTTP = ('test_http'),
             )
-        self._override.__enter__()
+        self.__override.__enter__()
 
     def tearDown(self):
-        self._override.__exit__(None, None, None)
+        self.__override.__exit__(None, None, None)
         rmtree(self._spool_dir)
         super(SpoolerTestCase, self).tearDown()
 
@@ -119,6 +119,46 @@ class SpoolerTest(SpoolerTestCase):
         s.process()
         #end = time()
         #print end - start
+
+
+class ShardedSpoolerTestCase(SpoolerTestCase):
+    """Test case providing a sharded standard spooler config."""
+
+    def setUp(self):
+        super(ShardedSpoolerTestCase, self).setUp()
+        self.__override = SettingsOverride(
+            SPOOLER_DEFAULTS={'minprocs': 1, 'maxprocs': 1, 'shard': True},
+            )
+        self.__override.__enter__()
+
+    def tearDown(self):
+        self.__override.__exit__(None, None, None)
+        super(ShardedSpoolerTestCase, self).tearDown()
+
+    def test_submit_datum(self):
+        s = Spool("test", directory=self._spool_dir, shard=True)
+        s._submit_datum("test_submit_datum")
+        shards = s._shards(s._in)
+        self.assertEqual(len(shards), 1)
+        entries = os.listdir(shards[0])
+        self.assertEqual(len(entries), 1)
+        entry = os.path.join(shards[0], entries[0])
+        with open(entry) as fd:
+            content = fd.read()
+        self.assertEqual(content, "test_submit_datum")
+
+    def test_processed(self):
+        s = Spool("test", directory=self._spool_dir, shard=True)
+        s._submit_datum("test_processed")
+        s.process()
+        shards = s._shards(s._out)
+        self.assertEqual(len(shards), 1)
+        entries = os.listdir(shards[0])
+        self.assertEqual(len(entries), 1)
+        entry = os.path.join(shards[0], entries[0])
+        with open(entry) as fd:
+            content = fd.read()
+        self.assertEqual(content, "test_processed")
 
 
 class TestSpoolManager(SpoolManager):
@@ -253,19 +293,20 @@ class SigAsyncTest(SpoolerTestCase):
         self._container = Process(target=sc.run, args=())
         self._container.start()
 
-        async_test1 = Signal()
-        async_connect(pass_handler, signal=async_test1, sender=Person)
-        p = Person.objects.all()[0]
-        async_test1.send(sender=Person, instance=p)
         try:
-            self.manager._processed.get(timeout=1)
-        except Empty:
+            async_test1 = Signal()
+            async_connect(pass_handler, signal=async_test1, sender=Person)
+            p = Person.objects.all()[0]
+            async_test1.send(sender=Person, instance=p)
             try:
-                (s, f) = self.manager._failed.get_nowait()
+                self.manager._processed.get(timeout=1)
             except Empty:
-                raise AssertionError("Timed out waiting for entry to process")
-            else:
-                raise AssertionError("Job failed")
+                try:
+                    (s, f) = self.manager._failed.get_nowait()
+                except Empty:
+                    raise AssertionError("Timed out waiting for entry to process")
+                else:
+                    raise AssertionError("Job failed")
         finally:
             os.kill(self._container.pid, signal.SIGINT)
             self._container.join()
