@@ -12,6 +12,7 @@ import signal
 import atexit
 import glob
 import logging
+import itertools
 from os import path
 from time import sleep, time
 from datetime import datetime, timedelta
@@ -667,7 +668,8 @@ class Spool(object):
         entries = [path.join(self._in, e) for e in entries]
         entries = filter(self._entry_filter, entries)
         for entry in entries:
-            yield entry
+            if not entry.startswith(path.join(self._in, SHARD_DIR)):
+                yield entry
 
     def _incoming_shard(self):
         """Like _incoming but gives files from the first non-empty shard dir"""
@@ -722,12 +724,11 @@ class Spool(object):
 
         self.manager.started_processing(self, self._in)
 
+        incoming = self._incoming()
         if self._sharded:
-            incoming = self._incoming_shard
-        else:
-            incoming = self._incoming
+            incoming = itertools.chain(incoming, self._incoming_shard())
 
-        for entry in incoming():
+        for entry in incoming:
             if self.manager.should_stop(self):
                 return
             try:

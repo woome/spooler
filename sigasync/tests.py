@@ -165,6 +165,21 @@ class ShardedSpoolerTestCase(SpoolerTestCase):
         s2 = Spool("test", directory=self._spool_dir, shard=False)
         self.assertTrue(s2._sharded)
 
+    def test_shard_processes_all(self):
+        """Test that a sharded spool processes leftover unsharded entries"""
+        s1 = Spool("test", directory=self._spool_dir, shard=False)
+        s1._submit_datum("test1")
+        s2 = Spool("test", directory=self._spool_dir, shard=True)
+        s2._submit_datum("test1")
+        self.assertTrue(s2._sharded)
+        shards = s2._shards(s2._in)
+        self.assertEqual(len(shards), 1)
+        self.assertEqual(len(os.listdir(shards[0])), 1)
+        self.assertEqual(len(list(s2._incoming())), 1)
+        s2.process()
+        self.assertEqual(len(os.listdir(shards[0])), 0)
+        self.assertEqual(len(list(s2._incoming())), 0)
+
     def test_shard_cleanup(self):
         from sigasync import spooler
         _oldtime = time() - spooler.SHARD_SECONDS - 10
