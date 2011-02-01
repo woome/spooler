@@ -548,7 +548,7 @@ class Spool(object):
                     continue
                 else:
                     raise
-            return
+            return target
 
     def _move_to_incoming(self, entry):
         if self._sharded:
