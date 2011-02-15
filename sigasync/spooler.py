@@ -6,15 +6,15 @@
 from __future__ import with_statement
 import os
 import sys
+import errno
 import tempfile
 import signal
 import atexit
 import glob
 import logging
-from os.path import join as pathjoin
-from os.path import exists as pathexists
-from os.path import basename, dirname
-from time import sleep
+import itertools
+from os import path
+from time import sleep, time
 from datetime import datetime, timedelta
 from multiprocessing import Process
 
@@ -22,6 +22,12 @@ SLEEP_TIME = 0.1  # seconds
 
 # How frequently to check the load and adjust spool processes
 ADJUST_INTERVAL = timedelta(seconds=60)
+
+# Store version
+SPOOLER_VERSION = 1
+SHARD_DIR = "v%d" % (SPOOLER_VERSION,)
+SHARD_SECONDS = 100
+SHARD_PREFIX = "shard_"
 
 class SpoolExists(Exception):
     pass
@@ -126,13 +132,13 @@ class SpoolContainer(object):
         qdict = {}
         defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
         for queue in queues:
-            queue_dir = pathjoin(self._base, queue)
+            queue_dir = path.join(self._base, queue)
             qconf = defaults.copy()
             qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
 
-            in_, out = [pathjoin(queue_dir, d) for d in ['in', 'out']]
+            in_, out = [path.join(queue_dir, d) for d in ['in', 'out']]
             retries = sorted(set(qconf.get('retries', [15, 60])))
-            fail_dirs = [pathjoin(queue_dir, d) for d in
+            fail_dirs = [path.join(queue_dir, d) for d in
                             ['retry%d' % t for t in retries] + ['failed']]
             qdict[queue] = {'incoming': in_,
                             'outgoing': out,
@@ -141,6 +147,7 @@ class SpoolContainer(object):
                             'maxprocs': qconf.get('maxprocs', 4),
                             'nprocs': qconf.get('minprocs', 1),
                             'procs': [],
+                            'shard': qconf.get('shard', False),
                             }
             t_prev = 0
             for t, in_dir, fail_dir in zip(retries, fail_dirs, fail_dirs[1:]):
@@ -153,6 +160,7 @@ class SpoolContainer(object):
                                 'nprocs': qconf.get('retry_minprocs', 1),
                                 'procs': [],
                                 'filter': self._delay_filter(t-t_prev),
+                                'shard': qconf.get('shard', False),
                                 }
                 t_prev = t
         self._queues = qdict
@@ -215,12 +223,12 @@ class SpoolContainer(object):
             qd['nprocs'] -= 1
 
     def _write_pid(self):
-        with open(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
+        with open(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
             f.write("%s" % os.getpid())
 
     def _remove_pid(self):
         try:
-            os.unlink(pathjoin(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
+            os.unlink(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
         except Exception, e:
             self.logger.warning(
                     "Failed to remove pidfile %s%s.pid" % (self._pid_base, os.getpid()))
@@ -285,7 +293,9 @@ class SpoolContainer(object):
                             in_spool=queue_settings['incoming'],
                             out_spool=queue_settings['outgoing'],
                             failed_spool=queue_settings['failure'],
-                            entry_filter=queue_settings.get('filter'))
+                            shard=queue_settings.get('shard'),
+                            entry_filter=queue_settings.get('filter'),
+                            )
         return spool
 
     def spool_process(self, queue, queue_settings, once_only=False):
@@ -377,8 +387,7 @@ class Spool(object):
                  in_spool=None,
                  out_spool=None,
                  failed_spool=None,
-                 shard_in=False,
-                 shard_out=False,
+                 shard=False,
                  entry_filter=None):
         """Initialize a spool, creating any necessary directories.
 
@@ -402,7 +411,7 @@ class Spool(object):
         in_spool  - The directory used for incoming entries.
         out_spool - The directory finished entries are moved to.
         failed_spool - The directory failed entries are moved to.
-        shard_out - currently unused
+        shard - whether to shard the in, out, and failed directories.
         entry_filter - A function returning boolean that is used as a filter
                        on entries
 
@@ -415,28 +424,48 @@ class Spool(object):
             self.manager = manager
 
         self._name = name
-        self._base = pathjoin(directory, name)
-        self._in = in_spool or pathjoin(self._base, "in")
-        self._out = out_spool or pathjoin(self._base, "out")
-        self._failed = failed_spool or pathjoin(self._base, "failed")
+        self._base = path.join(directory, name)
+        self._in = in_spool or path.join(self._base, "in")
+        self._out = out_spool or path.join(self._base, "out")
+        self._failed = failed_spool or path.join(self._base, "failed")
 
-        self._processing_base = pathjoin(self._base, "processing")
+        self._processing_base = path.join(self._base, "processing")
         self._entry_filter = entry_filter
-        self._shard_in = shard_in
-        self._shard_out = shard_out
+        self._sharded = shard
 
-        self.logger.debug("Initializing spool in %s with %s %s %s" 
-            % (self._base, self._in, self._out, self._failed))
+        self.logger.debug("Initializing spool in %s with %s %s %s",
+                          self._base, self._in, self._out, self._failed)
+        if self._sharded:
+            self.logger.debug("Spooler is sharded with interval %s seconds"
+                              " using format version %s in dir %s",
+                              SHARD_SECONDS, SPOOLER_VERSION, SHARD_DIR)
+
+        dirs = [self._in,
+                self._out,
+                self._processing_base,
+                self._failed]
+
+        if not self._sharded:
+            # check for existing shard store
+            if any(path.exists(path.join(p, SHARD_DIR))
+                   for p in (self._in, self._out)):
+                self._sharded = True
+                self.logger.info(
+                    "Found sharded spool in %s, running in sharded mode",
+                    self._base)
+
+        if self._sharded:
+            dirs.extend([path.join(self._in, SHARD_DIR),
+                         path.join(self._out, SHARD_DIR),
+                        ])
+
         # Ensure the directories are there
-        for p in [self._in,
-                  self._out,
-                  self._processing_base,
-                  self._failed]:
-            if not pathexists(p):
+        for p in dirs:
+            if not path.exists(p):
                 try:
                     os.makedirs(p)
                 except OSError, e:
-                    if pathexists(p):
+                    if e.errno == errno.EEXIST:
                         # Another process must have created the directory
                         pass
                     else:
@@ -493,21 +522,54 @@ class Spool(object):
         Returns the new path of the entry on success.
 
         """
-        target = pathjoin(dir, basename(entry))
+        target = path.join(dir, path.basename(entry))
         os.rename(entry, target)
         return target
 
+    def _move_to_sharded(self, entry, target_dir):
+        # Two tries, in case the current shard changes while we're
+        # submitting.
+        for attempt in [0, 1]:
+            # get shard dir and create if necessary
+            shard = self._get_current_shard(target_dir)
+            target = path.join(shard, path.basename(entry))
+            try:
+                os.makedirs(shard)
+            except OSError, e:
+                if e.errno == errno.EEXIST:
+                    pass
+                else:
+                    raise
+            try:
+                os.rename(entry, target)
+            except OSError, e:
+                if e.errno == errno.ENOENT and attempt < 1:
+                    # Target directory disappeared, try again
+                    continue
+                else:
+                    raise
+            return target
+
     def _move_to_incoming(self, entry):
-        return self._move_to(entry, self._in)
+        if self._sharded:
+            return self._move_to_sharded(entry, self._in)
+        else:
+            return self._move_to(entry, self._in)
 
     def _move_to_processing(self, entry):
         return self._move_to(entry, self._processing)
 
     def _move_to_failed(self, entry):
-        return self._move_to(entry, self._failed)
-        
+        if self._sharded:
+            return self._move_to_sharded(entry, self._failed)
+        else:
+            return self._move_to(entry, self._failed)
+
     def _move_to_outgoing(self, entry):
-        return self._move_to(entry, self._out)
+        if self._sharded:
+            return self._move_to_sharded(entry, self._out)
+        else:
+            return self._move_to(entry, self._out)
 
     def _make_datum_fname(self):
         """Return a filename (based in _in) suitable for the spooler.
@@ -539,7 +601,10 @@ class Spool(object):
         finally:
             os.close(tmpfd)
 
-        self._submit_file(tmpfname, mv=True)
+        if self._sharded:
+            self._submit_file_sharded(tmpfname, mv=True)
+        else:
+            self._submit_file(tmpfname, mv=True)
 
     def _submit_file(self, filename, mv=False):
         """Push the file into the spooler's queue.
@@ -555,21 +620,85 @@ class Spool(object):
             os.symlink(filename, target_name)
         self.manager.submitted_entry(self, target_name)
 
+    def _submit_file_sharded(self, filename, mv=False):
+        t = datetime.now()
+        pre = "%s%06d_%s_" % (t.strftime("%Y%m%d%H%M%S"),
+                              t.microsecond,
+                              os.getpid())
+
+        # Two tries, in case the current shard changes while we're
+        # submitting.
+        for attempt in [0, 1]:
+            # get shard dir and create if necessary
+            shard = self._get_current_shard(self._in)
+            try:
+                os.makedirs(shard)
+            except OSError, e:
+                if e.errno == errno.EEXIST:
+                    pass
+                else:
+                    raise
+            # mktemp seems not to care if the directory exists
+            target = tempfile.mktemp(prefix=pre, dir=shard)
+            try:
+                if mv:
+                    os.rename(filename, target)
+                else:
+                    os.symlink(filename, target)
+            except OSError, e:
+                if e.errno == errno.ENOENT and attempt < 1:
+                    # Target directory disappeared, try again
+                    continue
+                else:
+                    raise
+            self.manager.submitted_entry(self, target)
+            return
+
     def _incoming(self):
         """Yield an iterator over incoming file entries."""
         try:
             entries = os.listdir(self._in)
         except OSError, e:
-            if e.errno == 22:
-                # HFS+ sometimes returns errno 22 EINVAL from readdir
+            if e.errno == errno.EINVAL:
+                # HFS+ sometimes returns EINVAL from readdir
                 # after renaming files, so just retry on the next loop
                 return
             else:
                 raise e
-        entries = [pathjoin(self._in, e) for e in entries]
+        entries = [path.join(self._in, e) for e in entries]
         entries = filter(self._entry_filter, entries)
         for entry in entries:
-            yield entry
+            if not entry.startswith(path.join(self._in, SHARD_DIR)):
+                yield entry
+
+    def _incoming_shard(self):
+        """Like _incoming but gives files from the first non-empty shard dir"""
+        for shard in self._shards(self._in):
+            entries = sorted(os.listdir(shard))
+            if entries:
+                return (path.join(shard, e) for e in entries)
+            elif shard < self._get_current_shard(self._in):
+                # Shard appears empty and older than the current shard
+                # Try to remove it if it hasn't been modified recently
+                try:
+                    st = os.stat(shard)
+                    if time() - st.st_mtime > SHARD_SECONDS:
+                        try:
+                            os.rmdir(shard)
+                        except OSError, err:
+                            if err.errno != errno.ENOTEMPTY:
+                                raise
+                except OSError, err:
+                    if err.errno != errno.ENOENT:
+                        raise
+        return []
+
+    def _shards(self, base):
+        return sorted(glob.glob(path.join(base, SHARD_DIR, SHARD_PREFIX+'*')))
+
+    def _get_current_shard(self, base):
+        return path.join(base, SHARD_DIR, SHARD_PREFIX +
+                         str(int(time() / SHARD_SECONDS) * SHARD_SECONDS))
 
     def process(self, function=None):
         """Process the spool.
@@ -595,14 +724,17 @@ class Spool(object):
 
         self.manager.started_processing(self, self._in)
 
-        for entry in self._incoming():
+        incoming = self._incoming()
+        if self._sharded:
+            incoming = itertools.chain(incoming, self._incoming_shard())
+
+        for entry in incoming:
             if self.manager.should_stop(self):
                 return
             try:
                 processing_entry = self._move_to_processing(entry)
             except OSError, e:
-                if e.errno == 2:
-                    # '[Errno 2] No such file or directory'
+                if e.errno == errno.ENOENT:
                     # The file was moved, probably by another spool process
                     pass
                 else:
@@ -715,7 +847,7 @@ if __name__ == "__main__":
 
         if 'start' in args[0:1]:
             if glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                print "Failed to start - pid files exist in %s" % pathjoin(container._base, settings.SPOOLER_PID_BASE)
+                print "Failed to start - pid files exist in %s" % path.join(container._base, settings.SPOOLER_PID_BASE)
                 sys.exit(1)
 
             if '-D' not in opts:
@@ -724,12 +856,12 @@ if __name__ == "__main__":
 
         elif 'stop' in args[0:1]:
             for f in glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                with open(pathjoin(container._base, f)) as fh:
+                with open(path.join(container._base, f)) as fh:
                     pid = fh.read()
                 try:
                     os.kill(int(pid), signal.SIGINT)
                     # Succesfull kill so remove the pid file
-                    os.remove(pathjoin(container._base, f))
+                    os.remove(path.join(container._base, f))
                     print "Killing process %s." % pid
                 except OSError, e:
                     print "Failed to kill process %s: %s" % (pid, e)
