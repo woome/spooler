@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import logging
 import threading
@@ -12,34 +11,40 @@ except ImportError, e:
     from django.utils import simplejson
 from django.conf import settings
 from django.db import models, connection, transaction
-from testsupport.contextmanagers import SettingsOverride
-from sigasync.spooler import Spool, SpoolContainer, SpoolManager, FailError
+import sigasync.spooler
+from sigasync.spooler import Spool, SpoolContainer, SpoolManager
+from sigasync.spooler import SpoolDoesNotExist, FailError
 
-def _get_queue_name(name):
-    map = settings.SPOOLER_QUEUE_MAPPINGS
-    if name in map:
-        return map[name]
-    elif 'default' in map:
-        return map['default']
-    else:
-        return settings.DEFAULT_SPOOLER_QUEUE_NAME
+_config = None
+def get_config():
+    global _config
+    if _config is None:
+        _config = sigasync.spooler.read_config(settings.SPOOLER_CONFIG)
+    return _config
 
-def get_spool_conf(queue):
-    defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
-    qconf = defaults.copy()
-    qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
-    return qconf
-
-def get_spoolqueue(name):
+def get_spoolqueue(queue):
     from sigasync.http import HttpSpool
-    qname = _get_queue_name(name)
-    if name in settings.SPOOLER_VIA_HTTP:
-        qclass = HttpSpool
+    conf = get_config()
+    while queue in conf['mappings']:
+        if queue == conf['mappings'][queue]:
+            break
+        queue = conf['mappings'][queue]
+    if queue not in conf['queues']:
+        queue = conf['default_queue']
+    if queue not in conf['queues']:
+        raise SpoolDoesNotExist("No queue named '%s'" % queue)
+    qconf = conf['queues'][queue]
+    if qconf['http']:
+        spool_class = HttpSpool
     else:
-        qclass = SigAsyncSpool
-    qconf = get_spool_conf(qname)
-    return qclass(qname, directory=settings.SPOOLER_DIRECTORY,
-                  shard=qconf.get('shard', False))
+        spool_class = SigAsyncSpool
+    return spool_class(queue,
+                       directory=conf['base_directory'],
+                       in_spool=qconf['incoming'],
+                       out_spool=qconf['outgoing'],
+                       failed_spool=qconf['failure'],
+                       shard=qconf['shard'],
+                       )
 
 _local = threading.local()
 
@@ -117,8 +122,9 @@ class SigAsyncManager(SpoolManager):
 
 
 class SigAsyncContainer(SpoolContainer):
-    def __init__(self, manager=SigAsyncManager, directory=None):
-        super(SigAsyncContainer, self).__init__(manager, directory)
+    def __init__(self, manager=SigAsyncManager, directory=None,
+                 conf=settings.SPOOLER_CONFIG):
+        super(SigAsyncContainer, self).__init__(manager, directory, conf)
 
     def create_spool(self, queue, queue_settings):
         spool = super(SigAsyncContainer, self).create_spool(

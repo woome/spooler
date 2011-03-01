@@ -13,10 +13,13 @@ import atexit
 import glob
 import logging
 import itertools
+import socket
 from os import path
 from time import sleep, time
 from datetime import datetime, timedelta
 from multiprocessing import Process
+from configobj import ConfigObj, ConfigObjError, flatten_errors
+from validate import Validator
 
 SLEEP_TIME = 0.1  # seconds
 
@@ -29,18 +32,151 @@ SHARD_DIR = "v%d" % (SPOOLER_VERSION,)
 SHARD_SECONDS = 100
 SHARD_PREFIX = "shard_"
 
-class SpoolExists(Exception):
+CONFIGSPEC = 'sigasync/configspec.ini'
+
+
+class SpoolerError(Exception):
+    """Base class for spooler errors."""
     pass
 
-class SpoolDoesNotExist(Exception):
+class SpoolExists(SpoolerError):
     pass
 
-class ConfigurationError(Exception):
+class SpoolDoesNotExist(SpoolerError):
     pass
 
-class FailError(Exception):
+class ConfigurationError(SpoolerError):
+    pass
+
+class FailError(SpoolerError):
     """fail the entry"""
     pass
+
+
+def get_validation_errors(config, result):
+    """Extract and format validation errors from configobj"""
+    errors = []
+    for sections, key, result in flatten_errors(config, result):
+        # This really should aggregate the other way, i.e. list all
+        # missing values in a particular section at once.
+        secstr = '->'.join('[%s]' % sec for sec in sections)
+        if key is None:
+            errors.append("Missing required section %s" % secstr)
+        elif result is False:
+            # missing section or value
+            if sections:
+                errors.append("Missing required value '%s' in section %s"
+                              % (key, secstr))
+            else:
+                errors.append("Missing required value '%s' at top level."
+                              % key)
+        else:
+            # failed validation, result is the exception object
+            errors.append("%s %s: %s" % (secstr, key, result))
+    return errors
+
+
+def _load_config(conf, cache=None):
+    """Helper function for read_config to load files and process includes."""
+    if cache is None:
+        cache = dict()
+
+    try:
+        config = ConfigObj(conf, configspec=CONFIGSPEC, file_error=True)
+    except IOError, err:
+        if hasattr(err, 'strerror') and err.strerror:
+            message = err.strerror
+        else:
+            message = str(err)
+        if conf not in message:
+            message = "%s: %s" % (conf, message)
+        raise ConfigurationError(message)
+    except ConfigObjError, err:
+        if hasattr(err, 'errors'):
+            message = '\n'.join(str(e) for e in err.errors)
+        else:
+            message = str(err)
+        raise ConfigurationError("Error parsing %s: %s" % (conf, message))
+
+    # Make special values available for interpolation in the config
+    if 'DEFAULT' not in config:
+        config['DEFAULT'] = {}
+    config['DEFAULT']['host'] = socket.gethostname()
+
+    # includes have to happen before validation
+    if 'include' in config:
+        # precedence like include in a programming language
+        new_config = ConfigObj(configspec=CONFIGSPEC)
+        for include in config.as_list('include'):
+            if include not in cache:
+                cache[include] = {}  # This prevents circular loading
+                try:
+                    cache[include] = _load_config(include, cache=cache)
+                except ConfigurationError, err:
+                    raise ConfigurationError(
+                        "Error processing includes from %s: %s" % (conf, err))
+            new_config.merge(cache[include])
+        new_config.merge(config)
+        config = new_config
+    return config
+
+
+def read_config(conf):
+    """Pull data from config into local data structures."""
+    config = _load_config(conf)
+    validator = Validator()
+    res = config.validate(validator, preserve_errors=True)
+    if res is not True:
+        raise ConfigurationError(get_validation_errors(config, res))
+
+    # Merge default values into each queue
+    defaults = config['defaults']
+
+    def merge_defaults(section, key):
+        if section[key] is None and key in defaults:
+            section[key] = defaults[key]
+
+    config['queues'].walk(merge_defaults)
+    config['queues'] = make_queues(config)
+
+    return config.dict()
+
+
+def make_queues(config):
+    queues = dict(config['queues'])
+    # This loop modifies 'queues' and cannot use iteritems()
+    for queue, qconf in queues.items():
+        queue_dir = path.join(config['base_directory'], queue)
+        qconf['incoming'] = path.join(queue_dir, 'in')
+        qconf['outgoing'] = path.join(queue_dir, 'out')
+        # Make sure retries are sane and in order
+        qconf['retries'] = sorted(set(qconf['retries']))
+        fail_dirs = [path.join(queue_dir, d) for d in
+                    ['retry%d' % t for t in qconf['retries']] + ['failed']]
+        qconf['failure'] = fail_dirs[0]
+        # Start with the minimum number of processes
+        qconf['nprocs'] = qconf['minprocs']
+        # Initialize list for active processes
+        qconf['procs'] = []
+
+        # Set up the chain of retries
+        delay_prev = 0
+        for delay, in_dir, fail_dir in zip(qconf['retries'],
+                                           fail_dirs, fail_dirs[1:]):
+            retry_queue = queue + '_retry%d' % delay
+            queues[retry_queue] = qconf.copy()
+            queues[retry_queue].update({
+                'incoming': in_dir,
+                'failure': fail_dir,
+                'minprocs': qconf['retry_minprocs'],
+                'maxprocs': qconf['retry_maxprocs'],
+                'nprocs': qconf['retry_minprocs'],
+                'procs': [],
+                'filter': delay - delay_prev,
+                })
+            delay_prev = delay
+    return queues
+
 
 class SpoolManager(object):
     """Provide hooks for a Spool."""
@@ -93,7 +229,8 @@ class SpoolContainer(object):
     """Spooler container
     Contains the spools, manages processes, etc."""
     
-    def __init__(self, manager=SpoolManager, directory=None):
+    def __init__(self, manager=SpoolManager, directory=None,
+                 conf='config/spooler.ini'):
         self.logger = logging.getLogger("sigasync.spooler.SpoolContainer")
         self._children = set()
         self._base = directory
@@ -106,69 +243,17 @@ class SpoolContainer(object):
         else:
             self.manager = manager
 
-        self._read_config()
-
-    # TODO: Factor out Django-specific config
-    def _read_config(self):
-        """Pull data from config into local data structures."""
-        from django.conf import settings
-        # Allow base directory to be overridden (useful for testing)
+        config = read_config(conf)
         if self._base is None:
-            self._base = settings.SPOOLER_DIRECTORY
-
-        self._pid_base = settings.SPOOLER_PID_BASE
-
-        try:
-            queues = settings.SPOOLER_SPOOLS_ENABLED
-        except AttributeError:
-            self.logger.warning("SPOOLER_SPOOLS_ENABLED is not defined, "
-                                "running all by default.")
-            queues = set(settings.SPOOLER_QUEUE_MAPPINGS.values())
-        if not queues:
-            self.logger.error("No spools enabled.")
-            raise ConfigurationError("No spools enabled.")
-        self.logger.info("Running spools for: %s", ', '.join(queues))
-
-        qdict = {}
-        defaults = getattr(settings, 'SPOOLER_DEFAULTS', {})
-        for queue in queues:
-            queue_dir = path.join(self._base, queue)
-            qconf = defaults.copy()
-            qconf.update(getattr(settings, 'SPOOLER_%s' % queue.upper(), {}))
-
-            in_, out = [path.join(queue_dir, d) for d in ['in', 'out']]
-            retries = sorted(set(qconf.get('retries', [15, 60])))
-            fail_dirs = [path.join(queue_dir, d) for d in
-                            ['retry%d' % t for t in retries] + ['failed']]
-            qdict[queue] = {'incoming': in_,
-                            'outgoing': out,
-                            'failure': fail_dirs[0],
-                            'minprocs': qconf.get('minprocs', 1),
-                            'maxprocs': qconf.get('maxprocs', 4),
-                            'nprocs': qconf.get('minprocs', 1),
-                            'procs': [],
-                            'shard': qconf.get('shard', False),
-                            }
-            t_prev = 0
-            for t, in_dir, fail_dir in zip(retries, fail_dirs, fail_dirs[1:]):
-                qname = queue + '_retry%d' % t
-                qdict[qname] = {'incoming': in_dir,
-                                'outgoing': out,
-                                'failure': fail_dir,
-                                'minprocs': qconf.get('retry_minprocs', 1),
-                                'maxprocs': qconf.get('retry_maxprocs', 2),
-                                'nprocs': qconf.get('retry_minprocs', 1),
-                                'procs': [],
-                                'filter': self._delay_filter(t-t_prev),
-                                'shard': qconf.get('shard', False),
-                                }
-                t_prev = t
-        self._queues = qdict
+            self._base = config['base_directory']
+        self._pid_base = config['pid_base']
+        self._queues = config['queues']
 
     def _start_spools(self):
         for queue, conf in self._queues.iteritems():
-            for n in range(conf['nprocs']):
-                self._start_spool(queue)
+            if conf['enabled']:
+                for n in range(conf['nprocs']):
+                    self._start_spool(queue)
 
     def _start_spool(self, queue):
         container=self
@@ -243,6 +328,8 @@ class SpoolContainer(object):
             adjusted = False
             # check status of spools
             for queue, dict_ in self._queues.iteritems():
+                if not dict_['enabled']:
+                    continue
                 procs = dict_['procs']
                 # Clean out dead processes in this queue
                 for p in procs[:]:
@@ -294,7 +381,7 @@ class SpoolContainer(object):
                             out_spool=queue_settings['outgoing'],
                             failed_spool=queue_settings['failure'],
                             shard=queue_settings.get('shard'),
-                            entry_filter=queue_settings.get('filter'),
+                            entry_filter=self._delay_filter(queue_settings.get('filter')),
                             )
         return spool
 
@@ -328,6 +415,9 @@ class SpoolContainer(object):
 
     def _delay_filter(self, minutes):
         """Return a filter removing jobs less than _minutes_ old."""
+        if minutes is None:
+            return None
+
         delta = timedelta(minutes=minutes)
 
         def _filter(entry):
@@ -428,6 +518,7 @@ class Spool(object):
         self._in = in_spool or path.join(self._base, "in")
         self._out = out_spool or path.join(self._base, "out")
         self._failed = failed_spool or path.join(self._base, "failed")
+        self._tmp = path.join(self._base, 'tmp')
 
         self._processing_base = path.join(self._base, "processing")
         self._entry_filter = entry_filter
@@ -443,7 +534,8 @@ class Spool(object):
         dirs = [self._in,
                 self._out,
                 self._processing_base,
-                self._failed]
+                self._failed,
+                self._tmp]
 
         if not self._sharded:
             # check for existing shard store
@@ -595,7 +687,7 @@ class Spool(object):
         datum is written into a temporary file and the file is submitted.
 
         """
-        (tmpfd, tmpfname) = tempfile.mkstemp()
+        (tmpfd, tmpfname) = tempfile.mkstemp(dir=self._tmp)
         try:
             os.write(tmpfd, datum)
         finally:
@@ -836,12 +928,18 @@ if __name__ == "__main__":
 
     def main():
         import getopt
-        opts, args = getopt.gnu_getopt(sys.argv[1:], 'De:o:s:m:')
+        opts, args = getopt.gnu_getopt(sys.argv[1:], 'c:De:o:s:m:')
         opts = dict(opts)
-        if '-m' in opts:
-            container = _import_object(opts['-m'])()
+        if '-c' in opts:
+            conf_file = opts['-c']
         else:
-            container = SpoolContainer()
+            conf_file = settings.SPOOLER_CONFIG
+
+        if '-m' in opts:
+            container_class = _import_object(opts['-m'])
+        else:
+            container_class = SpoolContainer
+        container = container_class(conf=conf_file)
         err_log = opts.get('-e', '/dev/null')
         out_log = opts.get('-o', '/dev/null')
 
@@ -869,11 +967,12 @@ if __name__ == "__main__":
         else:
             print >> sys.stdout, """usage: %s [options] start
             options:
+            -c <file>:  load spooler configuration from <file>
             -D:         do not daemonize
             -e:         error log file
             -o:         stdout log file
             -s <num>:   number of seconds for each sleep loop. (ignored)
-            -m:         python path of spool container to instantiate/factory method. 
+            -m:         python path of spool container to instantiate/factory method.
 
             example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
 

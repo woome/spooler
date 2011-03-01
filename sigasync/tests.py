@@ -26,6 +26,8 @@ from webapp.models import Person
 from testsupport.woometestcase import WoomeTestCase
 from testsupport.contextmanagers import URLOverride, SettingsOverride
 
+import sigasync.spooler
+import sigasync.sigasync_spooler
 from sigasync.spooler import Spool, SpoolContainer, SpoolManager
 from sigasync.sigasync_spooler import SigAsyncContainer, SigAsyncSpool
 from sigasync.sigasync_handler import sigasync_handler, send_async
@@ -38,24 +40,43 @@ class SpoolerTestCase(WoomeTestCase):
     def setUp(self):
         super(SpoolerTestCase, self).setUp()
         self._spool_dir = tempfile.mkdtemp(prefix="testspooler_", dir="/tmp")
-        self.__override = SettingsOverride(
-            DISABLE_SIGASYNC_SPOOL = True,
-            SPOOLER_QUEUE_MAPPINGS = {
-                'default': 'default',
-                'test': 'test',
-                'test_http': 'test_http',
+
+        # Patch in a test config everywhere
+        # ConfigObj can take a dict instead of a filename as argument
+        conf = {
+            'base_directory': self._spool_dir,
+            'defaults': {
+                'minprocs': 1,
+                'maxprocs': 1,
                 },
-            SPOOLER_SPOOLS_ENABLED = ['default', 'test', 'test_http'],
-            SPOOLER_DEFAULTS = {'minprocs': 1, 'maxprocs': 1},
-            SPOOLER_DIRECTORY = self._spool_dir,
-            SPOOLER_DEFAULT = {},
-            SPOOLER_TEST = {},
-            SPOOLER_VIA_HTTP = ('test_http'),
-            )
+            'queues': {
+                'default': {},
+                'test': {},
+                'test_http': {'http': True},
+                'test_shard': {'shard': True},
+                },
+            }
+        test_config = sigasync.spooler.read_config(conf)
+
+        def read_test_config(ignored):
+            return test_config
+
+        # Save methods to be patched
+        self._real_config = sigasync.sigasync_spooler._config
+        self._real_read_config = sigasync.spooler.read_config
+        # Patch the config-returning methods
+        sigasync.spooler.read_config = read_test_config
+        sigasync.sigasync_spooler._config = test_config
+
+        self.__override = SettingsOverride(SPOOLER_CONFIG=conf)
         self.__override.__enter__()
 
     def tearDown(self):
         self.__override.__exit__(None, None, None)
+        # Restore patched config methods
+        sigasync.sigasync_spooler._config = self._real_config
+        sigasync.spooler.read_config = self._real_read_config
+
         rmtree(self._spool_dir)
         super(SpoolerTestCase, self).tearDown()
 
@@ -123,17 +144,6 @@ class SpoolerTest(SpoolerTestCase):
 
 class ShardedSpoolerTestCase(SpoolerTestCase):
     """Test case providing a sharded standard spooler config."""
-
-    def setUp(self):
-        super(ShardedSpoolerTestCase, self).setUp()
-        self.__override = SettingsOverride(
-            SPOOLER_DEFAULTS={'minprocs': 1, 'maxprocs': 1, 'shard': True},
-            )
-        self.__override.__enter__()
-
-    def tearDown(self):
-        self.__override.__exit__(None, None, None)
-        super(ShardedSpoolerTestCase, self).tearDown()
 
     def test_submit_datum(self):
         s = Spool("test", directory=self._spool_dir, shard=True)
@@ -339,6 +349,7 @@ class SigAsyncTest(SpoolerTestCase):
         super(self.__class__, self).tearDown()
 
     def test_submit(self):
+        # XXX Move this to MPSigAsyncTest
         self.manager = TestSpoolManager()
         sc = SigAsyncContainer(manager=self.manager)
         self._container = Process(target=sc.run, args=())
@@ -577,30 +588,25 @@ class SigasyncHttp(SpoolerTestCase):
             views.get_spoolqueue = oldview
 
     def test_dispatcher_sends_via_http(self):
-        from django.conf import settings
-        _OLD_HANDLER = settings.SPOOLER_VIA_HTTP
-        settings.SPOOLER_VIA_HTTP = ['test']
         test_signal = Signal()
-        try:
-            async_connect(http_test_handler, spooler='test',
-                          signal=test_signal, sender=Person)
-            data = {}
+        async_connect(http_test_handler, spooler='test_http',
+                        signal=test_signal, sender=Person)
+        data = {}
 
-            def testview(request, spooler):
-                data.update({
-                    'spooler': spooler,
-                    'data': request.POST.copy(),
-                })
-                from django.http import HttpResponse
-                return HttpResponse('OK')
+        def testview(request, spooler):
+            data.update({
+                'spooler': spooler,
+                'data': request.POST.copy(),
+            })
+            from django.http import HttpResponse
+            return HttpResponse('OK')
 
-            person = MockPerson()
-            with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
-                test_signal.send(instance=person, sender=Person)
-                assert data['spooler'] == 'test'
-                assert data['data']['instance'] == str(person.id)
-        finally:
-            settings.SPOOLER_VIA_HTTP = _OLD_HANDLER
+        person = MockPerson()
+        with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
+            test_signal.send(instance=person, sender=Person)
+            print data
+            assert data['spooler'] == 'test_http'
+            assert data['data']['instance'] == str(person.id)
 
 
 mockhandler = mock.Mock()
