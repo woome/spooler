@@ -45,6 +45,7 @@ class SpoolerTestCase(WoomeTestCase):
         # ConfigObj can take a dict instead of a filename as argument
         conf = {
             'base_directory': self._spool_dir,
+            'pid_file': os.path.join(self._spool_dir, 'spooler.pid'),
             'defaults': {
                 'minprocs': 1,
                 'maxprocs': 1,

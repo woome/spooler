@@ -246,7 +246,7 @@ class SpoolContainer(object):
         config = read_config(conf)
         if self._base is None:
             self._base = config['base_directory']
-        self._pid_base = config['pid_base']
+        self._pid_file = config['pid_file']
         self._queues = config['queues']
 
     def _start_spools(self):
@@ -308,15 +308,14 @@ class SpoolContainer(object):
             qd['nprocs'] -= 1
 
     def _write_pid(self):
-        with open(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())), 'w') as f:
+        with open(self._pid_file, 'w') as f:
             f.write("%s" % os.getpid())
 
     def _remove_pid(self):
         try:
-            os.unlink(path.join(self._base, '%s%s.pid' % (self._pid_base, os.getpid())))
+            os.unlink(self._pid_file)
         except Exception, e:
-            self.logger.warning(
-                    "Failed to remove pidfile %s%s.pid" % (self._pid_base, os.getpid()))
+            self.logger.warning("Failed to remove %s - %s", self._pid_file, e)
 
     def run(self):
         self._start_spools()
@@ -944,8 +943,8 @@ if __name__ == "__main__":
         out_log = opts.get('-o', '/dev/null')
 
         if 'start' in args[0:1]:
-            if glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                print "Failed to start - pid files exist in %s" % path.join(container._base, settings.SPOOLER_PID_BASE)
+            if path.exists(container._pid_file):
+                print "Failed to start - pid file exists at %s" % container._pid_file
                 sys.exit(1)
 
             if '-D' not in opts:
@@ -953,17 +952,16 @@ if __name__ == "__main__":
             container.run()
 
         elif 'stop' in args[0:1]:
-            for f in glob.glob("%s/%s[0-9]*.pid" % (container._base, settings.SPOOLER_PID_BASE)):
-                with open(path.join(container._base, f)) as fh:
-                    pid = fh.read()
-                try:
-                    os.kill(int(pid), signal.SIGINT)
-                    # Succesfull kill so remove the pid file
-                    os.remove(path.join(container._base, f))
-                    print "Killing process %s." % pid
-                except OSError, e:
-                    print "Failed to kill process %s: %s" % (pid, e)
-                    sys.exit(1)
+            with open(container._pid_file) as fh:
+                pid = fh.read()
+            try:
+                os.kill(int(pid), signal.SIGINT)
+                # Succesfull kill so remove the pid file
+                os.remove(container._pid_file)
+                print "Killing process %s." % pid
+            except OSError, e:
+                print "Failed to kill process %s: %s" % (pid, e)
+                sys.exit(1)
         else:
             print >> sys.stdout, """usage: %s [options] start
             options:
