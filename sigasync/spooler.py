@@ -900,83 +900,55 @@ def _import_object(name):
         raise ImportError("cannot import name %s" % obj_name)
     return obj
 
-if __name__ == "__main__":
-    ## Django command environment config
+def run(conf):
+    import getopt
+    opts, args = getopt.gnu_getopt(sys.argv[1:], 'c:De:o:s:m:')
+    opts = dict(opts)
+    if '-c' in opts:
+        conf_file = opts['-c']
+    else:
+        conf_file = conf
 
-    import os
-    import sys
+    if '-m' in opts:
+        container_class = _import_object(opts['-m'])
+    else:
+        container_class = SpoolContainer
+    container = container_class(conf=conf_file)
+    err_log = opts.get('-e', '/dev/null')
+    out_log = opts.get('-o', '/dev/null')
 
-    def setup_environment(filepath, depth):
-        """setup our django 'app' environment"""
-        sys.path = [os.path.abspath(os.path.dirname(filepath) + "%s/woome" % ("/.." * depth))] + sys.path
-        import config.importname
-        local_config = __import__('config.%s' % config.importname.get(), {}, {}, [''])
-        sys.path.insert(
-            0, 
-            getattr(local_config, 'DJANGO_PATH_DIR', os.path.join(os.environ['HOME'], 'django-hg-1.1')))
-        from django.core.management import setup_environ
-        import settings
-        setup_environ(settings)
+    if 'start' in args[0:1]:
+        if path.exists(container._pid_file):
+            print "Failed to start - pid file exists at %s" % container._pid_file
+            sys.exit(1)
 
-    if __name__ == "__main__":
-        setup_environment(__file__, 2)
+        if '-D' not in opts:
+            daemonize(out_log=out_log, err_log=err_log)
+        container.run()
 
-    from django.conf import settings
+    elif 'stop' in args[0:1]:
+        with open(container._pid_file) as fh:
+            pid = fh.read()
+        try:
+            os.kill(int(pid), signal.SIGINT)
+            # Succesfull kill so remove the pid file
+            os.remove(container._pid_file)
+            print "Killing process %s." % pid
+        except OSError, e:
+            print "Failed to kill process %s: %s" % (pid, e)
+            sys.exit(1)
+    else:
+        print >> sys.stdout, """usage: %s [options] start
+        options:
+        -c <file>:  load spooler configuration from <file>
+        -D:         do not daemonize
+        -e:         error log file
+        -o:         stdout log file
+        -s <num>:   number of seconds for each sleep loop. (ignored)
+        -m:         python path of spool container to instantiate/factory method.
 
-    import global_signals_connector
+        example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
 
-    def main():
-        import getopt
-        opts, args = getopt.gnu_getopt(sys.argv[1:], 'c:De:o:s:m:')
-        opts = dict(opts)
-        if '-c' in opts:
-            conf_file = opts['-c']
-        else:
-            conf_file = settings.SPOOLER_CONFIG
-
-        if '-m' in opts:
-            container_class = _import_object(opts['-m'])
-        else:
-            container_class = SpoolContainer
-        container = container_class(conf=conf_file)
-        err_log = opts.get('-e', '/dev/null')
-        out_log = opts.get('-o', '/dev/null')
-
-        if 'start' in args[0:1]:
-            if path.exists(container._pid_file):
-                print "Failed to start - pid file exists at %s" % container._pid_file
-                sys.exit(1)
-
-            if '-D' not in opts:
-                daemonize(out_log=out_log, err_log=err_log)
-            container.run()
-
-        elif 'stop' in args[0:1]:
-            with open(container._pid_file) as fh:
-                pid = fh.read()
-            try:
-                os.kill(int(pid), signal.SIGINT)
-                # Succesfull kill so remove the pid file
-                os.remove(container._pid_file)
-                print "Killing process %s." % pid
-            except OSError, e:
-                print "Failed to kill process %s: %s" % (pid, e)
-                sys.exit(1)
-        else:
-            print >> sys.stdout, """usage: %s [options] start
-            options:
-            -c <file>:  load spooler configuration from <file>
-            -D:         do not daemonize
-            -e:         error log file
-            -o:         stdout log file
-            -s <num>:   number of seconds for each sleep loop. (ignored)
-            -m:         python path of spool container to instantiate/factory method.
-
-            example: %s -m sigasync.sigasync_spooler.SigAsyncContainer -D start
-
-            """ % (sys.argv[0], sys.argv[0])
-
-    main()
-
+        """ % (sys.argv[0], sys.argv[0])
 
 # End
