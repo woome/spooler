@@ -12,5 +12,6 @@ setup(
     author_email='tech@woome.com',
     packages=['sigasync'],
     install_requires=requires,
+    package_data={'sigasync': ['configspec.ini']},
 )
 

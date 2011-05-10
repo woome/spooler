@@ -18,6 +18,7 @@ from os import path
 from time import sleep, time
 from datetime import datetime, timedelta
 from multiprocessing import Process
+from pkg_resources import resource_stream
 from configobj import ConfigObj, ConfigObjError, flatten_errors
 from validate import Validator
 
@@ -31,8 +32,6 @@ SPOOLER_VERSION = 1
 SHARD_DIR = "v%d" % (SPOOLER_VERSION,)
 SHARD_SECONDS = 100
 SHARD_PREFIX = "shard_"
-
-CONFIGSPEC = 'sigasync/configspec.ini'
 
 
 class SpoolerError(Exception):
@@ -81,8 +80,9 @@ def _load_config(conf, cache=None):
     if cache is None:
         cache = dict()
 
+    spec = resource_stream(__name__, 'configspec.ini')
     try:
-        config = ConfigObj(conf, configspec=CONFIGSPEC, file_error=True)
+        config = ConfigObj(conf, configspec=spec, file_error=True)
     except IOError, err:
         if hasattr(err, 'strerror') and err.strerror:
             message = err.strerror
@@ -106,7 +106,7 @@ def _load_config(conf, cache=None):
     # includes have to happen before validation
     if 'include' in config:
         # precedence like include in a programming language
-        new_config = ConfigObj(configspec=CONFIGSPEC)
+        new_config = ConfigObj(configspec=spec)
         for include in config.as_list('include'):
             if include not in cache:
                 cache[include] = {}  # This prevents circular loading
