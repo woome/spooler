@@ -10,6 +10,7 @@ import random
 import signal
 import logging
 import pprint
+import unittest
 from shutil import rmtree
 from cgi import parse_qsl
 from urllib import urlencode
@@ -19,12 +20,9 @@ from time import sleep, time
 from datetime import datetime
 
 from django.dispatch.dispatcher import Signal
-from django.core.cache import cache
 from django.db import transaction
-
-from webapp.models import Person
-from testsupport.woometestcase import WoomeTestCase
-from testsupport.contextmanagers import URLOverride, SettingsOverride
+from django.conf import settings
+from django.conf.urls.defaults import patterns
 
 import sigasync.spooler
 import sigasync.sigasync_spooler
@@ -34,7 +32,22 @@ from sigasync.sigasync_handler import sigasync_handler, send_async
 from sigasync.dispatcher import async_connect
 
 
-class SpoolerTestCase(WoomeTestCase):
+class URLOverride(object):
+    def __init__(self, *newpatterns):
+        self.patterns = patterns('', *newpatterns)
+
+    def __enter__(self):
+        urlconf = __import__(settings.ROOT_URLCONF, {}, {}, [''])
+        self.urlconf = urlconf
+        self.urlpatterns = urlconf.urlpatterns
+        urlconf.urlpatterns = self.patterns
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.urlconf.urlpatterns = self.urlpatterns
+        return False
+
+
+class SpoolerTestCase(unittest.TestCase):
     """Test case providing a standard spooler setup."""
 
     def setUp(self):
@@ -69,11 +82,7 @@ class SpoolerTestCase(WoomeTestCase):
         sigasync.spooler.read_config = read_test_config
         sigasync.sigasync_spooler._config = test_config
 
-        self.__override = SettingsOverride(SPOOLER_CONFIG=conf)
-        self.__override.__enter__()
-
     def tearDown(self):
-        self.__override.__exit__(None, None, None)
         # Restore patched config methods
         sigasync.sigasync_spooler._config = self._real_config
         sigasync.spooler.read_config = self._real_read_config
@@ -285,20 +294,10 @@ class MultiprocessingSpoolerTest(SpoolerTestCase):
 def pass_handler(sender, instance, **kwargs):
     pass
 
+
 def print_handler(sender, instance, **kwargs):
     print "Processed!"
 
-def fail_once_handler(sender, instance, **kwargs):
-    if cache.get('sigasync_fail') is None:
-        cache.set('sigasync_fail', 1, 30 * 60)
-        raise Exception("Failing once")
-    else:
-        cache.delete('sigasync_fail')
-        print "Success!"
-        start = cache.get('sigasync_test')
-        print datetime.now() - start
-        cache.set('sigasync_test_finished', 1, 30 * 60)
-        return
 
 def fail_handler(sender, instance, **kwargs):
     print "Failing"
@@ -323,7 +322,11 @@ class MockSpoolQueue(object):
             self.spoolqueue = [sq]
         return sq
 
-class MockPerson(object):
+class Person(object):
+    class Meta(object):
+        app_label = 'webapp'
+    _meta = Meta
+
     def __init__(self):
         self.id = random.randint(1, 100000)
 
@@ -359,7 +362,7 @@ class SigAsyncTest(SpoolerTestCase):
         try:
             async_test1 = Signal()
             async_connect(pass_handler, signal=async_test1, sender=Person)
-            p = Person.objects.all()[0]
+            p = Person()
             async_test1.send(sender=Person, instance=p)
             try:
                 self.manager._processed.get(timeout=1)
@@ -375,7 +378,7 @@ class SigAsyncTest(SpoolerTestCase):
             self._container.join()
 
     def test_signal_waits_for_commit(self):
-        person = MockPerson()
+        person = Person()
         from sigasync import views, sigasync_spooler, sigasync_handler
         oldview = views.get_spoolqueue
         spoolqueue = MockSpoolQueue()
@@ -502,7 +505,7 @@ class SigasyncHttp(SpoolerTestCase):
             from django.http import HttpResponse
             return HttpResponse('OK')
 
-        person = MockPerson()
+        person = Person()
         with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
             send_async(pass_handler, 'test_http', sender=Person,
                 instance=person, created=True)
@@ -510,7 +513,7 @@ class SigasyncHttp(SpoolerTestCase):
             assert data['data']['instance'] == str(person.id)
 
     def test_submitted_datum(self):
-        person = MockPerson()
+        person = Person()
         from sigasync import views
         oldview = views.get_spoolqueue
         spoolqueue = MockSpoolQueue()
@@ -546,7 +549,7 @@ class SigasyncHttp(SpoolerTestCase):
         from sigasync import sigasync_handler
         oldhandler = sigasync_handler.get_spoolqueue
 
-        person = MockPerson()
+        person = Person()
         try:
             send_async(print_handler, 'test_http', sender=Person,
                 instance=person, created=True)
@@ -573,7 +576,7 @@ class SigasyncHttp(SpoolerTestCase):
             sigasync_handler.get_spoolqueue = oldhandler
 
     def test_list_submission_in_kwargs(self):
-        person = MockPerson()
+        person = Person()
         from sigasync import views
         oldview = views.get_spoolqueue
         spoolqueue = MockSpoolQueue()
@@ -602,7 +605,7 @@ class SigasyncHttp(SpoolerTestCase):
             from django.http import HttpResponse
             return HttpResponse('OK')
 
-        person = MockPerson()
+        person = Person()
         with URLOverride((r'^spooler/(?P<spooler>.+)/$', testview)):
             test_signal.send(instance=person, sender=Person)
             print data
