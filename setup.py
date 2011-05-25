@@ -1,6 +1,7 @@
 import sys
 from setuptools import setup
 
+from sigasync import __version__
 requires=['configobj']
 if sys.version_info < (2, 6):
     requires.append('multiprocessing')
@@ -8,7 +9,7 @@ if sys.version_info < (2, 6):
 
 setup(
     name='spooler',
-    version='0.1',
+    version=__version__,
     description='Simple task queue using the filesystem',
     long_description="""Task queue that uses a filesystem backend. It comes with an interface to Django signals, and can be easily extended.""",
     author='Woome',
