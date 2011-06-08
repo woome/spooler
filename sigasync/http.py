@@ -39,5 +39,5 @@ class WebService(object):
 
 class HttpSpool(SigAsyncSpool):
     def submit(self, spec):
-        webservice = WebService(get_config())
+        webservice = WebService(**get_config())
         webservice.post('/spooler/%s/' % self._name, spec)
